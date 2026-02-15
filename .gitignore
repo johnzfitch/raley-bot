@@ -1,0 +1,31 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Credentials — never commit these
+cookies.json
+*.har
+*.cookies
+
+# Legacy test file (uses hardcoded paths and phantom deps)
+test_api.py
+
+# Local data
+*.db
+*.sqlite
+*.sqlite3
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
