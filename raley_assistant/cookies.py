@@ -92,9 +92,9 @@ def save_cookies(cookies: list[dict[str, Any]]) -> None:
     COOKIES_DIR.mkdir(parents=True, exist_ok=True)
 
     # Write with restrictive permissions (owner-only read/write)
-    filepath = COOKIES_FILE
-    filepath.touch(mode=0o600, exist_ok=True)
-    with filepath.open("w") as f:
+    import os
+    fd = os.open(str(COOKIES_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(cookies, f, indent=2)
 
 

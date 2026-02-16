@@ -207,12 +207,12 @@ def calculate_unit_prices(
 def compare_value(product1: dict, product2: dict) -> Optional[str]:
     """Compare two products and return which is better value."""
     p1_pricing = calculate_unit_prices(
-        int(product1["price"] * 100),
+        round(product1["price"] * 100),
         product1.get("name", ""),
         product1.get("size", ""),
     )
     p2_pricing = calculate_unit_prices(
-        int(product2["price"] * 100),
+        round(product2["price"] * 100),
         product2.get("name", ""),
         product2.get("size", ""),
     )
@@ -238,7 +238,7 @@ def best_value_from_list(products: list[dict]) -> Optional[dict]:
     scored = []
     for p in products:
         pricing = calculate_unit_prices(
-            int(p["price"] * 100),
+            round(p["price"] * 100),
             p.get("name", ""),
             p.get("size", ""),
         )

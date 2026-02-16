@@ -156,7 +156,7 @@ def build_cart_from_list(
             continue
 
         best = products[0]
-        price_cents = int(best["price"] * 100)
+        price_cents = round(best["price"] * 100)
 
         if auto_add:
             add_to_cart(client, best["sku"], qty, price_cents)

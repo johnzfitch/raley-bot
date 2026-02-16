@@ -588,9 +588,9 @@ def get_orders(
     limit: int = 30,
 ) -> list[dict]:
     """Get order history with line items."""
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
-    end = datetime.utcnow()
+    end = datetime.now(timezone.utc)
     start = end - timedelta(days=days_back)
 
     body = {

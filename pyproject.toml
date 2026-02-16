@@ -1,6 +1,6 @@
 [project]
 name = "raley-assistant"
-version = "0.3.0c"
+version = "0.3.0rc1"
 description = "Your dependable grocery shopping pal with MCP integration"
 requires-python = ">=3.11"
 license = {text = "Unlicense"}

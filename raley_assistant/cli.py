@@ -473,7 +473,7 @@ def add(sku: str, qty: int, price: float):
     """Add item to cart by SKU."""
     client = get_client()
 
-    item = CartItem(sku=sku, quantity=qty, price_cents=int(price * 100))
+    item = CartItem(sku=sku, quantity=qty, price_cents=round(price * 100))
 
     if add_to_cart(client, [item]):
         console.print(f"[green]Added {qty}x SKU {sku} (${price:.2f}) to cart[/green]")

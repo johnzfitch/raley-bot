@@ -159,7 +159,7 @@ TOOLS = [
     ),
     Tool(
         name="plan",
-        description="Parse grocery list, find matches. Does NOT add to cart.",
+        description="Parse grocery list, find matches. Does not add to cart.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -285,7 +285,7 @@ async def handle_search(args: dict) -> str:
         "sku": decision.sku,
         "name": decision.product_name,
         "price": f"${decision.price:.2f}",
-        "cents": int(decision.price * 100),
+        "cents": round(decision.price * 100),
     }
 
     if unit_pricing_dict and unit_pricing_dict.get("best"):
@@ -497,7 +497,7 @@ async def handle_build_list(args: dict) -> str:
             "sku": decision.sku,
             "unit": f"${decision.price:.2f}",
             "line": f"${line_total:.2f}",
-            "cents": int(decision.price * 100),
+            "cents": round(decision.price * 100),
         }
 
         if recently_bought:

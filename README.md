@@ -164,4 +164,4 @@ This is an unofficial tool not affiliated with or endorsed by the grocery chain.
 
 ## License
 
-MIT
+Unlicense
