@@ -19,6 +19,16 @@ test_api.py
 *.sqlite
 *.sqlite3
 
+# Personal preferences (copy preferences.example.json)
+preferences.json
+
+# Project docs — local reference only
+CLAUDE.md
+ARCHITECTURE.md
+AUDIT.md
+PR.md
+docs/
+
 # Editor
 .vscode/
 .idea/

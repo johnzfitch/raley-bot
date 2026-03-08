@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#16213e"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <text x="640" y="240" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="96" font-weight="700" fill="#e8e8e8" letter-spacing="-2">raley</text>
+  <text x="640" y="320" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#8892b0" letter-spacing="6">GROCERY SHOPPING ASSISTANT</text>
+  <line x1="520" y1="360" x2="760" y2="360" stroke="#4a5568" stroke-width="1"/>
+  <text x="640" y="410" text-anchor="middle" font-family="ui-monospace, monospace" font-size="20" fill="#64ffda">MCP + CLI + SQLite + curl</text>
+  <text x="640" y="460" text-anchor="middle" font-family="system-ui, sans-serif" font-size="18" fill="#5a6785" font-style="italic">shops with you, not for you</text>
+</svg>

@@ -4,6 +4,30 @@ version = "0.3.0rc1"
 description = "Your dependable grocery shopping pal with MCP integration"
 requires-python = ">=3.11"
 license = {text = "Unlicense"}
+keywords = [
+    "grocery",
+    "shopping",
+    "mcp",
+    "cli",
+    "price-tracking",
+    "coupon",
+    "unit-pricing",
+    "claude-desktop",
+    "sqlite",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business",
+]
 dependencies = [
     "beautifulsoup4",
     "lxml",
@@ -12,6 +36,10 @@ dependencies = [
     "mcp>=1.0.0",
     "helium",
 ]
+
+[project.urls]
+Repository = "https://github.com/johnzfitch/raley-bot"
+"Bug Tracker" = "https://github.com/johnzfitch/raley-bot/issues"
 
 [project.optional-dependencies]
 dev = [

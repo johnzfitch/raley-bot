@@ -124,7 +124,13 @@ Rate limiting is applied to bulk operations (200ms between requests, 500ms every
 
 ## Preferences
 
-Drop a `preferences.json` in the project root:
+Copy the example and edit to taste:
+
+```bash
+cp preferences.example.json ~/.config/raley-assistant/preferences.json
+```
+
+Format:
 
 ```json
 {

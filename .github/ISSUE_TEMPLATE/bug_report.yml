@@ -1,0 +1,35 @@
+name: Bug Report
+description: Something isn't working right
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect vs. what actually happened?
+    validations:
+      required: true
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Interface
+      options:
+        - CLI (raley)
+        - MCP Server (raley-mcp)
+        - Both
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands, MCP tool calls, or conversation excerpts
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, curl version
+      placeholder: |
+        OS:
+        Python:
+        curl:
