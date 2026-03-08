@@ -1,0 +1,13 @@
+{
+  "milk": {
+    "brand": "Clover",
+    "type": "whole",
+    "organic": false,
+    "size": "gallon"
+  },
+  "general": {
+    "prefer_local": true,
+    "organic_preference": "indifferent",
+    "budget_target": 200
+  }
+}
