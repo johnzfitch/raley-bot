@@ -218,3 +218,124 @@ async def test_missing_cookies_raises_error():
         mock_path.__str__ = lambda self: "/fake/path"
         with pytest.raises(RuntimeError, match="Cookies not found"):
             get_api_client()
+
+
+# ── handle_deals ──────────────────────────────────────────────────
+
+@patch("raley_assistant.mcp_server.get_offers")
+@patch("raley_assistant.mcp_server.is_good_deal")
+@patch("raley_assistant.mcp_server.search_products")
+@patch("raley_assistant.mcp_server.get_connection")
+@patch("raley_assistant.mcp_server.get_api_client")
+async def test_handle_deals_returns_structure(mock_client, mock_conn, mock_search, mock_deal, mock_offers):
+    from raley_assistant.mcp_server import handle_deals
+
+    mock_client.return_value = MagicMock()
+    mock_conn.return_value = MagicMock()
+    mock_conn.return_value.execute.return_value.fetchall.return_value = []
+    mock_search.return_value = [
+        _fake_product("Sale Bread", "B1", 500, "Brand", sale_cents=399, size="24oz", unit_oz=24.0),
+    ]
+    mock_deal.return_value = (True, "Near historical low")
+    mock_offers.return_value = []
+
+    result = json.loads(await handle_deals({}))
+
+    assert "deals" in result
+    assert "clipped_coupons_on_file" in result
+    assert isinstance(result["deals"], list)
+
+
+@patch("raley_assistant.mcp_server.get_offers")
+@patch("raley_assistant.mcp_server.is_good_deal")
+@patch("raley_assistant.mcp_server.search_products")
+@patch("raley_assistant.mcp_server.get_connection")
+@patch("raley_assistant.mcp_server.get_api_client")
+async def test_handle_deals_gi_filter(mock_client, mock_conn, mock_search, mock_deal, mock_offers):
+    from raley_assistant.mcp_server import handle_deals
+
+    mock_client.return_value = MagicMock()
+    mock_conn.return_value = MagicMock()
+    mock_conn.return_value.execute.return_value.fetchall.return_value = []
+    # White rice = high GI — should be filtered out
+    mock_search.return_value = [
+        _fake_product("White Rice 5lb", "R1", 800, "Brand", sale_cents=699, size="80oz", unit_oz=80.0),
+    ]
+    mock_deal.return_value = (False, "")
+    mock_offers.return_value = []
+
+    result = json.loads(await handle_deals({"gi_filter": True}))
+    # High-GI item should not appear
+    assert all(item.get("gi_cat") in ("low", None) for item in result["deals"])
+
+
+# ── handle_memory ─────────────────────────────────────────────────
+
+async def test_handle_memory_get_returns_defaults():
+    from raley_assistant.mcp_server import handle_memory
+
+    result = json.loads(await handle_memory({"action": "get"}))
+
+    # Core T1D fields always present
+    assert "gi_ceiling" in result
+    assert "carb_target_per_meal_g" in result
+    assert "bg_target" in result
+
+
+async def test_handle_memory_set():
+    from raley_assistant.mcp_server import handle_memory
+
+    with patch("raley_assistant.mcp_server.set_field", return_value=(True, "Set t1d.gi_ceiling = 60")) as mock_set:
+        result = json.loads(await handle_memory({
+            "action": "set", "section": "t1d", "key": "gi_ceiling", "value": "60"
+        }))
+        mock_set.assert_called_once_with("t1d", "gi_ceiling", "60")
+        assert result["ok"] is True
+
+
+async def test_handle_memory_note():
+    from raley_assistant.mcp_server import handle_memory
+
+    with patch("raley_assistant.mcp_server.add_note") as mock_note:
+        result = json.loads(await handle_memory({
+            "action": "note", "key": "liked_lentil_soup", "value": "Very good, ~45g carbs"
+        }))
+        mock_note.assert_called_once_with("liked_lentil_soup", "Very good, ~45g carbs")
+        assert result["ok"] is True
+
+
+async def test_handle_memory_missing_key():
+    from raley_assistant.mcp_server import handle_memory
+
+    result = json.loads(await handle_memory({"action": "set", "section": "t1d"}))
+    assert "error" in result
+
+
+# ── handle_knowledge ──────────────────────────────────────────────
+
+async def test_handle_knowledge_no_books():
+    from raley_assistant.mcp_server import handle_knowledge
+
+    with patch("raley_assistant.mcp_server.search_knowledge", return_value=[]):
+        result = json.loads(await handle_knowledge({"q": "insulin timing"}))
+        assert result["results"] == []
+
+
+async def test_handle_knowledge_returns_results():
+    from raley_assistant.mcp_server import handle_knowledge
+
+    fake_results = [
+        {"book": "type1-recipes", "heading": "ADJUSTING INSULIN DOSAGES", "snippet": "Pre-bolusing 15-20 minutes..."},
+    ]
+    with patch("raley_assistant.mcp_server.search_knowledge", return_value=fake_results):
+        result = json.loads(await handle_knowledge({"q": "insulin timing"}))
+        assert result["count"] == 1
+        assert result["results"][0]["heading"] == "ADJUSTING INSULIN DOSAGES"
+
+
+async def test_handle_knowledge_empty_query_lists_books():
+    from raley_assistant.mcp_server import handle_knowledge
+
+    with patch("raley_assistant.mcp_server.list_books", return_value=[{"name": "type1-recipes", "size_kb": 180}]):
+        result = json.loads(await handle_knowledge({"q": ""}))
+        assert "books" in result

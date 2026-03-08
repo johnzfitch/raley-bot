@@ -35,7 +35,7 @@ console = Console()
 def get_client():
     """Get authenticated client or exit with error."""
     if not COOKIES_FILE.exists():
-        console.print("[red]No saved session. Run 'raley login' first.[/red]")
+        console.print("[red]No saved session. Run 'raley-bot login' first.[/red]")
         raise SystemExit(1)
 
     return create_client(COOKIES_FILE)
@@ -140,7 +140,7 @@ def status():
     """Check session status and account info."""
     saved = load_saved_cookies()
     if not saved:
-        console.print("[red]No saved session. Run 'raley login' first.[/red]")
+        console.print("[red]No saved session. Run 'raley-bot login' first.[/red]")
         return
 
     cookies = saved.get("cookies", saved) if isinstance(saved, dict) else saved
@@ -261,7 +261,7 @@ def offers(category: str | None, unclipped: bool, clipped: bool):
     unclipped_count = sum(1 for o in all_offers if not o.is_clipped)
     if unclipped_count > 0:
         console.print(
-            f"[cyan]Unclipped: {unclipped_count} (run 'raley clip-all' to clip)[/cyan]"
+            f"[cyan]Unclipped: {unclipped_count} (run 'raley-bot clip-all' to clip)[/cyan]"
         )
 
 

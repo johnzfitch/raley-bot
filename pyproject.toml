@@ -49,6 +49,7 @@ dev = [
 
 [project.scripts]
 raley = "raley_assistant.cli:main"
+raley-bot = "raley_assistant.cli:main"
 raley-mcp = "raley_assistant.mcp_server:main"
 
 [build-system]

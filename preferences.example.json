@@ -1,13 +1,22 @@
 {
+  "general": {
+    "prefer_local": true,
+    "organic_preference": "indifferent",
+    "budget_target": 150
+  },
   "milk": {
     "brand": "Clover",
     "type": "whole",
     "organic": false,
     "size": "gallon"
   },
-  "general": {
-    "prefer_local": true,
-    "organic_preference": "indifferent",
-    "budget_target": 200
+  "eggs": {
+    "brand": "",
+    "organic": false,
+    "size": "dozen"
+  },
+  "bread": {
+    "brand": "Dave's Killer Bread",
+    "type": "whole grain"
   }
 }

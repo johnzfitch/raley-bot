@@ -85,7 +85,7 @@ def check_auth_status() -> dict:
             "authenticated": False,
             "cookies_found": 0,
             "path": str(COOKIES_PATH),
-            "message": "No session found. Run 'raley login' to authenticate.",
+            "message": "No session found. Run 'raley-bot login' to authenticate.",
         }
 
     try:
@@ -98,7 +98,7 @@ def check_auth_status() -> dict:
             else:
                 cookies = []
 
-            cookie_names = {c["name"] for c in cookies}
+            cookie_names = {c.get("name", "") for c in cookies}
             has_required = all(name in cookie_names for name in REQUIRED_COOKIES)
 
             now = datetime.now(timezone.utc).timestamp()
@@ -125,10 +125,12 @@ def check_auth_status() -> dict:
                             except ValueError:
                                 continue
 
-                    if expiry < now:
-                        expired.append(name)
-                    elif expiry < (now + seven_days):
-                        expiring_soon.append(name)
+                    # Only flag required cookies as expired
+                    if name in REQUIRED_COOKIES:
+                        if expiry < now:
+                            expired.append(name)
+                        elif expiry < (now + seven_days):
+                            expiring_soon.append(name)
 
             if expired:
                 message = f"Session expired ({len(expired)} cookies expired)"
