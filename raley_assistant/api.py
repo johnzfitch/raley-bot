@@ -4,12 +4,15 @@ Named after Raley, an inspiring person in our lives.
 """
 
 import json
-import subprocess
+import os
+import re
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from collections.abc import Callable
-from urllib.parse import quote, urlencode
+from subprocess import PIPE, Popen, TimeoutExpired
+from urllib.parse import quote, urlencode, urlsplit
 
 BASE_URL = "https://www.raleys.com"
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0"
@@ -18,22 +21,59 @@ USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/1
 DEFAULT_TIMEOUT = 30
 MAX_COOKIE_VALUE_LEN = 8192  # RFC 6265 practical limit
 
+# Matches control chars (\x00-\x1f, \x7f) and URL-encoded CRLF (%0d, %0a)
+_COOKIE_UNSAFE_RE = re.compile(r"[\x00-\x1f\x7f]|%0[dDaA]")
 
-def _sanitize_cookie_value(value: str) -> str:
-    """Strip characters that could cause header injection."""
-    # Remove newlines, carriage returns, and null bytes
-    return value.replace("\n", "").replace("\r", "").replace("\x00", "")
+# RFC 7230 token characters for header names
+_HEADER_TOKEN_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
+
+
+def _validate_url(url: str) -> None:
+    """Validate URL has allowed scheme and host."""
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Invalid URL scheme: {parsed.scheme}")
+    if not parsed.netloc:
+        raise ValueError("URL missing host")
+
+
+def _is_safe_cookie_component(name: str, value: str) -> bool:
+    """Return False if name or value contains control chars, encoded CRLF, or semicolons."""
+    if _COOKIE_UNSAFE_RE.search(name) or _COOKIE_UNSAFE_RE.search(value):
+        return False
+    if ";" in value:
+        return False
+    return True
+
+
+def _build_cookie_header(cookies: list[dict]) -> str | None:
+    """Build cookie header, dropping unsafe pairs entirely."""
+    safe_pairs = []
+    for cookie in cookies:
+        name = str(cookie.get("name", ""))
+        value = str(cookie.get("value", ""))
+        if not name or len(value) > MAX_COOKIE_VALUE_LEN:
+            continue
+        if _is_safe_cookie_component(name, value):
+            safe_pairs.append(f"{name}={value}")
+    return "; ".join(safe_pairs) if safe_pairs else None
+
+
+def _is_valid_header_name(name: str) -> bool:
+    """Check header name matches RFC 7230 token production."""
+    return bool(_HEADER_TOKEN_RE.match(name))
+
+
+def _sanitize_header_value(value: str) -> str:
+    """Strip control characters from header values to prevent injection."""
+    return re.sub(r"[\x00-\x08\x0a-\x1f\x7f]", "", value)
 
 
 class CurlClient:
     """HTTP client using curl to bypass F5 bot detection."""
 
     def __init__(self, cookies: list[dict]):
-        self.cookie_str = "; ".join(
-            f"{_sanitize_cookie_value(c['name'])}={_sanitize_cookie_value(c['value'])}"
-            for c in cookies
-            if c.get("name") and c.get("value") and len(c.get("value", "")) < MAX_COOKIE_VALUE_LEN
-        )
+        self.cookie_str = _build_cookie_header(cookies) or ""
 
     def _run_curl(
         self,
@@ -45,11 +85,16 @@ class CurlClient:
     ) -> tuple[int, str]:
         """Run curl and return (status_code, body)."""
         if params:
-            # Use proper URL encoding instead of naive string concatenation
-            query = urlencode(params, quote_via=quote)
+            safe_params = {str(k): str(v) for k, v in params.items() if v is not None}
+            query = urlencode(safe_params, quote_via=quote)
             url = f"{url}?{query}"
 
-        cmd = ["curl", "-s", "-w", "\n%{http_code}", url]
+        try:
+            _validate_url(url)
+        except ValueError:
+            return 0, json.dumps({"error": "Invalid URL"})
+
+        cmd = ["curl", "-s", "-w", "\n%{http_code}"]
 
         if method == "POST":
             cmd.extend(["-X", "POST"])
@@ -58,12 +103,15 @@ class CurlClient:
         cmd.extend(["-H", f"User-Agent: {USER_AGENT}"])
         cmd.extend(["-H", "Accept: application/json, text/plain, */*"])
         cmd.extend(["-H", "Accept-Language: en-US,en;q=0.5"])
-        cmd.extend(["-H", f"Cookie: {self.cookie_str}"])
+        if self.cookie_str:
+            cmd.extend(["-H", f"Cookie: {self.cookie_str}"])
 
-        # Custom headers (sanitize values)
+        # Custom headers (validate name, sanitize value)
         if headers:
             for name, value in headers.items():
-                safe_value = _sanitize_cookie_value(str(value))
+                if not _is_valid_header_name(name):
+                    continue
+                safe_value = _sanitize_header_value(str(value))
                 cmd.extend(["-H", f"{name}: {safe_value}"])
 
         # JSON body
@@ -71,14 +119,23 @@ class CurlClient:
             cmd.extend(["-H", "Content-Type: application/json"])
             cmd.extend(["-d", json.dumps(json_body)])
 
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=DEFAULT_TIMEOUT
-            )
-        except subprocess.TimeoutExpired:
-            return 0, '{"error": "Request timed out"}'
+        # -- prevents curl from interpreting URL as flags
+        cmd.append("--")
+        cmd.append(url)
 
-        output = result.stdout.strip()
+        try:
+            proc = Popen(cmd, stdout=PIPE, stderr=PIPE, text=True, start_new_session=True)
+            stdout, stderr = proc.communicate(timeout=DEFAULT_TIMEOUT)
+        except TimeoutExpired:
+            # Kill entire process group to prevent zombie curl processes
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            proc.wait()
+            return 0, json.dumps({"error": "Request timed out"})
+
+        output = stdout.strip()
 
         # Last line is status code
         lines = output.rsplit("\n", 1)

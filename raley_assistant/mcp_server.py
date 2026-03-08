@@ -67,6 +67,11 @@ _preferred_brands: dict[str, str] = {
 }
 
 
+def _truncate(s: str, maxlen: int = 40) -> str:
+    """Truncate string with ellipsis indicator."""
+    return s[:maxlen - 3] + "..." if len(s) > maxlen else s
+
+
 def get_api_client():
     """Get authenticated API client."""
     if not COOKIES_PATH.exists():
@@ -355,7 +360,7 @@ async def handle_cart(args: dict) -> str:
         price = item.get("totalPrice", {}).get("centAmount", 0) / 100
         items.append(
             {
-                "name": name[:40],
+                "name": _truncate(name),
                 "qty": item.get("quantity", 1),
                 "price": f"${price:.2f}",
                 "sku": item.get("variant", {}).get("sku", ""),
@@ -493,7 +498,7 @@ async def handle_build_list(args: dict) -> str:
         r = {
             "item": item_name,
             "qty": qty,
-            "match": decision.product_name[:40],
+            "match": _truncate(decision.product_name),
             "sku": decision.sku,
             "unit": f"${decision.price:.2f}",
             "line": f"${line_total:.2f}",
@@ -575,7 +580,7 @@ async def handle_price_check(args: dict) -> str:
                 "products": [
                     {
                         "sku": r["sku"],
-                        "name": r["name"][:40],
+                        "name": _truncate(r["name"]),
                         "price": f"${r['price_cents']/100:.2f}"
                         if r.get("price_cents")
                         else None,
@@ -598,7 +603,7 @@ async def handle_price_check(args: dict) -> str:
         return json.dumps(
             {
                 "sku": record.sku,
-                "name": record.name[:40],
+                "name": _truncate(record.name),
                 "current": f"${record.current_price/100:.2f}",
                 "avg": f"${record.avg_price/100:.2f}",
                 "min": f"${record.min_price/100:.2f}",
@@ -717,7 +722,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         result = await handler(arguments)
         return [TextContent(type="text", text=result)]
     except Exception as e:
-        msg = str(e)[:MAX_ERROR_LENGTH] if str(e) else "Unknown error"
+        raw = str(e) if str(e) else "Unknown error"
+        # Strip paths and potential credential fragments from error messages
+        import re
+        sanitized = re.sub(r"(/[\w./-]+)", "<path>", raw)
+        sanitized = re.sub(r"(FLDR\.\w+=)[^\s;]+", r"\1<redacted>", sanitized)
+        msg = sanitized[:MAX_ERROR_LENGTH]
         return [TextContent(type="text", text=json.dumps({"error": msg}))]
 
 

@@ -76,9 +76,9 @@ def login(file: str | None):
 
             progress.update(task, description="Testing session...")
             client = create_client(COOKIES_FILE)
-            valid = check_session(client)
+            session_data = check_session(client)
 
-        if valid:
+        if session_data:
             console.print("[green]Login successful! Session saved.[/green]")
 
             profile = get_user_profile(client)
