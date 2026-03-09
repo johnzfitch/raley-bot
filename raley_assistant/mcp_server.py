@@ -57,7 +57,7 @@ coupon management, and Type 1 diabetes nutrition guidance.
 | plan      | Parse a freeform grocery list, find matches + totals. Does not add to cart |
 | price     | Price history for a SKU, or text search of local product DB |
 | orders    | Past order history with totals |
-| favorites | Purchase patterns: `products` (top items), `brands` (top brands), `sync` (refresh) |
+| favorites | Purchase history: `products` (recent), `brands` (by product count), `sync` (refresh) |
 | deals     | Best-value items this week: clipped coupons + sale prices + price history |
 | memory    | Read/write shopping memory. Use `section=t1d/shopping/notes` to filter |
 | knowledge | Search T1D books. Use `book`+`heading` to fetch full section after searching |
@@ -320,14 +320,14 @@ TOOLS = [
     ),
     Tool(
         name="favorites",
-        description="Purchase history analysis: top products, brands, and patterns.",
+        description="Purchase history from 'previously purchased' API.",
         inputSchema={
             "type": "object",
             "properties": {
                 "type": {
                     "type": "string",
                     "enum": ["products", "brands", "stats", "sync"],
-                    "description": "products=top bought items, brands=top brands, stats=summary, sync=refresh from API",
+                    "description": "products=by recency, brands=by product count, stats=summary, sync=refresh from API",
                 },
                 "limit": {"type": "integer"},
             },
@@ -890,14 +890,13 @@ async def handle_favorites(args: dict) -> str:
     conn = get_connection()
     try:
         if query_type == "sync":
-            # Refresh from API - paginate to get all previously purchased
+            # Refresh from API - paginate until exhausted
             client = get_api_client()
             all_products = []
             offset = 0
             page_size = 30
-            max_pages = 10  # Safety limit: 300 products max
 
-            for _ in range(max_pages):
+            while True:
                 page = get_previously_purchased(client, offset=offset, limit=page_size)
                 if not page:
                     break
