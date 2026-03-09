@@ -575,9 +575,27 @@ def add_to_cart(client: CurlClient, items: list[CartItem]) -> bool:
 
     The API's add endpoint is idempotent (won't increment existing items),
     so we check the cart first and use update for existing items.
+
+    Handles duplicate SKUs in the same batch by accumulating quantities.
     """
     if not items:
         return True
+
+    # Dedupe items: accumulate quantities for repeated SKUs in the same batch
+    sku_to_item: dict[str, CartItem] = {}
+    for item in items:
+        if item.sku in sku_to_item:
+            existing = sku_to_item[item.sku]
+            sku_to_item[item.sku] = CartItem(
+                sku=item.sku,
+                quantity=existing.quantity + item.quantity,
+                price_cents=item.price_cents,
+                sell_type=item.sell_type,
+                estimated_weight=item.estimated_weight,
+            )
+        else:
+            sku_to_item[item.sku] = item
+    items = list(sku_to_item.values())
 
     # Fetch cart once to check for existing items
     cart = get_cart(client)

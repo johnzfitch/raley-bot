@@ -895,11 +895,20 @@ async def handle_favorites(args: dict) -> str:
             all_products = []
             offset = 0
             page_size = 30
+            max_items = 2000  # Safety cap
+            last_page_skus: set[str] = set()
 
-            while True:
+            while len(all_products) < max_items:
                 page = get_previously_purchased(client, offset=offset, limit=page_size)
                 if not page:
                     break
+
+                # Detect stuck pagination (API ignoring offset)
+                current_skus = {p.sku for p in page}
+                if current_skus == last_page_skus:
+                    break  # Same page returned twice
+                last_page_skus = current_skus
+
                 all_products.extend(page)
                 if len(page) < page_size:
                     break  # Last page

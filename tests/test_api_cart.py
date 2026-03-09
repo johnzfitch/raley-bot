@@ -124,6 +124,44 @@ def test_add_to_cart_empty_list():
     client.get.assert_not_called()
 
 
+def test_add_to_cart_dedupes_same_sku_in_batch():
+    """Same SKU twice in one call should accumulate quantities."""
+    cart = {"lineItems": []}
+    client = _mock_client(cart)
+
+    items = [
+        CartItem(sku="SKU1", quantity=2, price_cents=499),
+        CartItem(sku="SKU1", quantity=3, price_cents=499),  # Same SKU
+    ]
+    result = add_to_cart(client, items)
+
+    assert result is True
+    # Should call add once with combined quantity
+    call_args = client.post.call_args
+    assert "/api/cart/item/add" in call_args[0][0]
+    added_items = call_args[1]["json_body"]
+    assert len(added_items) == 1
+    assert added_items[0]["quantity"] == 5  # 2 + 3
+
+
+def test_add_to_cart_dedupes_existing_same_sku_in_batch():
+    """Same SKU twice in batch, already in cart - should combine then update."""
+    cart = {"lineItems": [{"id": "line-123", "quantity": 1, "variant": {"sku": "SKU1"}}]}
+    client = _mock_client(cart)
+
+    items = [
+        CartItem(sku="SKU1", quantity=2, price_cents=499),
+        CartItem(sku="SKU1", quantity=3, price_cents=499),
+    ]
+    result = add_to_cart(client, items)
+
+    assert result is True
+    # Should update with 1 (existing) + 5 (combined) = 6
+    call_args = client.post.call_args
+    assert "/api/cart/item/update" in call_args[0][0]
+    assert call_args[1]["json_body"] == [{"lineItemId": "line-123", "quantity": 6}]
+
+
 # ── remove_from_cart ───────────────────────────────────────────────────
 
 
