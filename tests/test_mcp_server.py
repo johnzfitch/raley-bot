@@ -553,6 +553,85 @@ async def test_handle_orders_handles_cent_amount_format(mock_client, mock_orders
     assert result["orders"][0]["total"] == "$50.00"
 
 
+# ── handle_price_check cache clear ───────────────────────────────
+
+
+def _mock_counting_conn(counts: dict[str, int]):
+    """Mock sqlite connection for cache clear tests."""
+    conn = MagicMock()
+    deleted_tables = []
+
+    def execute(sql, *args, **kwargs):
+        if sql.startswith("SELECT COUNT(*) FROM "):
+            table = sql.split()[-1]
+            cursor = MagicMock()
+            cursor.fetchone.return_value = (counts[table],)
+            return cursor
+        if sql.startswith("DELETE FROM "):
+            table = sql.split()[-1]
+            deleted_tables.append(table)
+            return MagicMock()
+        raise AssertionError(f"Unexpected SQL: {sql}")
+
+    conn.execute.side_effect = execute
+    conn.deleted_tables = deleted_tables
+    return conn
+
+
+@patch("raley_assistant.mcp_server.get_connection")
+async def test_handle_price_clear_default_tables(mock_conn):
+    from raley_assistant.mcp_server import handle_price_check
+
+    mock_db = _mock_counting_conn({
+        "products": 12,
+        "price_history": 34,
+    })
+    mock_conn.return_value = mock_db
+
+    result = json.loads(await handle_price_check({"clear": "true"}))
+
+    assert result["cleared"] == {
+        "products": 12,
+        "price_history": 34,
+    }
+    assert mock_db.deleted_tables == ["products", "price_history"]
+    mock_db.commit.assert_called_once()
+    mock_db.close.assert_called_once()
+
+
+@patch("raley_assistant.mcp_server.get_connection")
+async def test_handle_price_clear_all_tables(mock_conn):
+    from raley_assistant.mcp_server import handle_price_check
+
+    mock_db = _mock_counting_conn({
+        "products": 12,
+        "price_history": 34,
+        "purchase_history": 5,
+        "coupons": 8,
+        "order_items": 3,
+    })
+    mock_conn.return_value = mock_db
+
+    result = json.loads(await handle_price_check({"clear": "all"}))
+
+    assert result["cleared"] == {
+        "products": 12,
+        "price_history": 34,
+        "purchase_history": 5,
+        "coupons": 8,
+        "order_items": 3,
+    }
+    assert mock_db.deleted_tables == [
+        "products",
+        "price_history",
+        "purchase_history",
+        "coupons",
+        "order_items",
+    ]
+    mock_db.commit.assert_called_once()
+    mock_db.close.assert_called_once()
+
+
 # ── handle_favorites ──────────────────────────────────────────────
 
 
@@ -635,3 +714,38 @@ async def test_handle_favorites_sync(mock_conn, mock_client, mock_get_prev, mock
     assert "Synced 2" in result["message"]
     mock_sync_prev.assert_called_once()
     mock_sync_prod.assert_called_once()
+
+
+@patch("raley_assistant.mcp_server.sync_products_from_search")
+@patch("raley_assistant.mcp_server.sync_previously_purchased")
+@patch("raley_assistant.mcp_server.get_previously_purchased")
+@patch("raley_assistant.mcp_server.get_api_client")
+@patch("raley_assistant.mcp_server.get_connection")
+async def test_handle_favorites_sync_stops_on_repeated_page(
+    mock_conn,
+    mock_client,
+    mock_get_prev,
+    mock_sync_prev,
+    mock_sync_prod,
+):
+    from raley_assistant.mcp_server import handle_favorites
+
+    mock_db = MagicMock()
+    mock_conn.return_value = mock_db
+    mock_client.return_value = MagicMock()
+    first_page = [
+        _fake_product(f"Item {i}", f"SKU{i}")
+        for i in range(30)
+    ]
+    mock_get_prev.side_effect = [first_page, first_page]
+    mock_sync_prev.return_value = len(first_page)
+
+    result = json.loads(await handle_favorites({"type": "sync"}))
+
+    assert result["synced"] == 30
+    assert mock_get_prev.call_args_list == [
+        ((mock_client.return_value,), {"offset": 0, "limit": 30}),
+        ((mock_client.return_value,), {"offset": 30, "limit": 30}),
+    ]
+    mock_sync_prev.assert_called_once_with(mock_db, first_page)
+    mock_sync_prod.assert_called_once_with(mock_db, first_page)
