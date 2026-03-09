@@ -738,6 +738,25 @@ def get_cart(client: CurlClient) -> dict:
 # ============================================================================
 
 
+def get_store_id(client: CurlClient) -> str:
+    """Get the current store/fulfillment location ID from the session.
+
+    Returns store identifier string, or empty string if unavailable.
+    """
+    status, data = client.get(f"{BASE_URL}/api/auth/session")
+    if status != 200 or not isinstance(data, dict):
+        return ""
+    # The session API nests store info in various places depending on fulfillment type
+    user = data.get("user", {})
+    store = user.get("store", {})
+    store_id = store.get("id", "") or store.get("key", "")
+    if not store_id:
+        # Fallback: check fulfillment location
+        fulfillment = user.get("fulfillment", {})
+        store_id = fulfillment.get("storeId", "") or fulfillment.get("locationId", "")
+    return str(store_id) if store_id else ""
+
+
 def check_session(client: CurlClient) -> dict | None:
     """Check if session is valid. Returns user data or None."""
     status, data = client.get(f"{BASE_URL}/api/auth/session")

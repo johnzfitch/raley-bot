@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS products (
     unit_oz REAL,
     price_per_oz REAL,
     last_seen TEXT NOT NULL,
-    first_seen TEXT NOT NULL
+    first_seen TEXT NOT NULL,
+    store_id TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS price_history (
@@ -111,7 +112,7 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-def sync_products_from_search(conn: sqlite3.Connection, products: list) -> int:
+def sync_products_from_search(conn: sqlite3.Connection, products: list, store_id: str = "") -> int:
     """Sync Product objects from a search into the local DB.
 
     Upserts product records and appends price history observations.
@@ -127,8 +128,8 @@ def sync_products_from_search(conn: sqlite3.Connection, products: list) -> int:
         conn.execute(
             """
             INSERT INTO products (sku, name, brand, price_cents, sale_price_cents,
-                                  size, unit_oz, price_per_oz, last_seen, first_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  size, unit_oz, price_per_oz, last_seen, first_seen, store_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(sku) DO UPDATE SET
                 name = excluded.name,
                 brand = excluded.brand,
@@ -137,7 +138,8 @@ def sync_products_from_search(conn: sqlite3.Connection, products: list) -> int:
                 size = excluded.size,
                 unit_oz = excluded.unit_oz,
                 price_per_oz = excluded.price_per_oz,
-                last_seen = excluded.last_seen
+                last_seen = excluded.last_seen,
+                store_id = CASE WHEN excluded.store_id != '' THEN excluded.store_id ELSE products.store_id END
             """,
             (
                 p.sku,
@@ -150,6 +152,7 @@ def sync_products_from_search(conn: sqlite3.Connection, products: list) -> int:
                 p.price_per_oz,
                 now,
                 now,
+                store_id,
             ),
         )
 
@@ -383,6 +386,46 @@ def is_good_deal(
         return False, f"{pct_vs_avg:.0f}% above avg (${avg/100:.2f}). Consider waiting."
 
     return False, f"Near average price (${avg/100:.2f})."
+
+
+def check_store_mismatch(conn: sqlite3.Connection, current_store_id: str) -> dict | None:
+    """Check if cached products are from a different store.
+
+    Returns a warning dict if most cached products have a different store_id,
+    or None if no mismatch detected.
+    """
+    if not current_store_id:
+        return None
+
+    row = conn.execute(
+        """
+        SELECT store_id, COUNT(*) as cnt
+        FROM products
+        WHERE store_id != '' AND store_id != ?
+        GROUP BY store_id
+        ORDER BY cnt DESC
+        LIMIT 1
+        """,
+        (current_store_id,),
+    ).fetchone()
+
+    if not row:
+        return None
+
+    total = conn.execute("SELECT COUNT(*) as c FROM products WHERE store_id != ''").fetchone()["c"]
+    mismatched = row["cnt"]
+
+    if mismatched > 0 and total > 0 and mismatched / total > 0.5:
+        return {
+            "warning": "store_changed",
+            "cached_store": row["store_id"],
+            "current_store": current_store_id,
+            "stale_products": mismatched,
+            "message": f"Cache has {mismatched} products from a different store. "
+                       f"Run price clear=true to refresh.",
+        }
+
+    return None
 
 
 def search_products_local(

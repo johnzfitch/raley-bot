@@ -16,6 +16,42 @@ from typing import Optional
 import re
 
 
+# Minimum realistic $/lb for common product categories.
+# Prices below these thresholds are almost certainly API data errors.
+_PRICE_FLOORS_PER_LB: list[tuple[list[str], int]] = [
+    (["chicken", "poultry", "turkey"], 150),     # $1.50/lb
+    (["beef", "steak", "ground beef"], 300),      # $3.00/lb
+    (["pork", "ham", "bacon"], 200),              # $2.00/lb
+    (["salmon", "tuna", "shrimp", "fish"], 400),  # $4.00/lb
+    (["lamb"], 500),                               # $5.00/lb
+    (["cheese"], 200),                             # $2.00/lb
+]
+
+
+def check_price_sanity(product_name: str, price_cents: int, weight_oz: float | None) -> str | None:
+    """Flag suspiciously low prices that are likely API data errors.
+
+    Returns a warning string if the price seems implausible, or None if OK.
+    """
+    if not weight_oz or weight_oz <= 0 or price_cents <= 0:
+        return None
+
+    price_per_lb_cents = (price_cents / weight_oz) * 16
+    name_lower = product_name.lower()
+
+    for keywords, floor_cents in _PRICE_FLOORS_PER_LB:
+        if any(kw in name_lower for kw in keywords):
+            if price_per_lb_cents < floor_cents:
+                return (
+                    f"PRICE_DATA_SUSPECT: ${price_per_lb_cents / 100:.2f}/lb for "
+                    f"{product_name[:30]} is below ${floor_cents / 100:.2f}/lb minimum. "
+                    f"Verify pack size on website."
+                )
+            break
+
+    return None
+
+
 class PurchaseFrequency(Enum):
     """How often a product category is typically purchased."""
 
