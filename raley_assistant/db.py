@@ -91,7 +91,7 @@ class ProductHistory:
     sku: str
     name: str
     brand: str
-    current_price: int  # cents
+    current_price_cents: int
     avg_price: float  # cents
     min_price: int  # cents
     max_price: int  # cents
@@ -319,7 +319,7 @@ def get_product_with_history(
         sku=sku,
         name=product["name"],
         brand=product["brand"] or "",
-        current_price=effective_price,
+        current_price_cents=effective_price,
         avg_price=stats["avg_price"] or effective_price,
         min_price=stats["min_price"] or effective_price,
         max_price=stats["max_price"] or effective_price,

@@ -822,13 +822,13 @@ async def handle_price_check(args: dict) -> str:
             if not record:
                 return json.dumps({"error": "No history", "sku": args["sku"]})
 
-            is_deal, reason = is_good_deal(conn, args["sku"], record.current_price)
+            is_deal, reason = is_good_deal(conn, args["sku"], record.current_price_cents)
 
             return json.dumps(
                 {
                     "sku": record.sku,
                     "name": _truncate(record.name),
-                    "current": f"${record.current_price/100:.2f}",
+                    "current": f"${record.current_price_cents/100:.2f}",
                     "avg": f"${record.avg_price/100:.2f}",
                     "min": f"${record.min_price/100:.2f}",
                     "max": f"${record.max_price/100:.2f}",
