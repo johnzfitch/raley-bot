@@ -429,3 +429,123 @@ def get_price_trend(conn: sqlite3.Connection, sku: str, days: int = 30) -> list[
     ).fetchall()
 
     return [{"date": r["observed_at"][:10], "price_cents": r["price"]} for r in rows]
+
+
+def sync_previously_purchased(conn: sqlite3.Connection, products: list) -> int:
+    """Sync products from the 'previously purchased' API into order_items.
+
+    Since the orders API doesn't return line items, we use the previously
+    purchased search filter to build purchase history. Each sync increments
+    a seen count and updates last_seen date.
+
+    Returns number of products synced.
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    count = 0
+
+    for p in products:
+        # Use INSERT OR REPLACE to track each product
+        # We store today's date as purchased_at since we don't know actual dates
+        conn.execute(
+            """
+            INSERT INTO order_items (sku, product_name, purchased_at, order_id)
+            VALUES (?, ?, ?, 'previously_purchased')
+            ON CONFLICT(sku, purchased_at) DO UPDATE SET
+                product_name = excluded.product_name
+            """,
+            (p.sku, p.name, now),
+        )
+        count += 1
+
+    conn.commit()
+    return count
+
+
+def get_favorite_products(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
+    """Get most frequently purchased products.
+
+    Returns products ordered by number of times seen in purchase history.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            oi.sku,
+            oi.product_name,
+            p.brand,
+            COUNT(*) as purchase_count,
+            MAX(oi.purchased_at) as last_purchased,
+            p.price_cents,
+            p.sale_price_cents
+        FROM order_items oi
+        LEFT JOIN products p ON oi.sku = p.sku
+        GROUP BY oi.sku
+        ORDER BY purchase_count DESC, last_purchased DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+    return [
+        {
+            "sku": r["sku"],
+            "name": r["product_name"],
+            "brand": r["brand"] or "",
+            "purchase_count": r["purchase_count"],
+            "last_purchased": r["last_purchased"],
+            "current_price": r["sale_price_cents"] or r["price_cents"],
+        }
+        for r in rows
+    ]
+
+
+def get_favorite_brands(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
+    """Get most frequently purchased brands.
+
+    Returns brands ordered by number of distinct products purchased.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            p.brand,
+            COUNT(DISTINCT oi.sku) as product_count,
+            COUNT(*) as total_purchases
+        FROM order_items oi
+        JOIN products p ON oi.sku = p.sku
+        WHERE p.brand != '' AND p.brand IS NOT NULL
+        GROUP BY p.brand
+        ORDER BY product_count DESC, total_purchases DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+    return [
+        {
+            "brand": r["brand"],
+            "products": r["product_count"],
+            "purchases": r["total_purchases"],
+        }
+        for r in rows
+    ]
+
+
+def get_purchase_stats(conn: sqlite3.Connection) -> dict:
+    """Get overall purchase history statistics."""
+    total_products = conn.execute(
+        "SELECT COUNT(DISTINCT sku) as c FROM order_items"
+    ).fetchone()["c"]
+
+    total_purchases = conn.execute(
+        "SELECT COUNT(*) as c FROM order_items"
+    ).fetchone()["c"]
+
+    date_range = conn.execute(
+        "SELECT MIN(purchased_at) as first, MAX(purchased_at) as last FROM order_items"
+    ).fetchone()
+
+    return {
+        "unique_products": total_products,
+        "total_purchase_records": total_purchases,
+        "tracking_since": date_range["first"] if date_range else None,
+        "last_sync": date_range["last"] if date_range else None,
+    }

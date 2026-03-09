@@ -48,20 +48,35 @@ raley orders                      # Order history
 raley points                      # Something Extra balance
 ```
 
-## MCP Server (Claude Desktop)
+## MCP Server (Claude Desktop / Claude Code)
 
-Add to `~/.config/claude/claude_desktop_config.json`:
+**Claude Desktop** — add to `~/.config/Claude/claude_desktop_config.json` (Linux) or `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
 
 ```json
 {
   "mcpServers": {
-    "raley-assistant": {
+    "raley-bot": {
       "command": "uv",
-      "args": ["--directory", "/path/to/raley-assistant", "run", "raley-mcp"]
+      "args": ["run", "--directory", "/path/to/raley-bot", "raley-mcp"]
     }
   }
 }
 ```
+
+**Claude Code** — add to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "raley-bot": {
+      "command": "/path/to/raley-bot/.venv/bin/raley-mcp",
+      "args": []
+    }
+  }
+}
+```
+
+The install script configures these automatically.
 
 Then talk to Claude like a normal person:
 

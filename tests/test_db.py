@@ -11,6 +11,10 @@ from raley_assistant.db import (
     get_product_with_history,
     search_products_local,
     get_price_stats,
+    sync_previously_purchased,
+    get_favorite_products,
+    get_favorite_brands,
+    get_purchase_stats,
 )
 
 
@@ -228,3 +232,93 @@ def test_sync_order_items_skips_missing_sku():
     sync_order_items(conn, orders)
     rows = conn.execute("SELECT COUNT(*) as c FROM order_items").fetchone()
     assert rows["c"] == 1
+
+
+# ── sync_previously_purchased ───────────────────────────────────────
+
+
+def test_sync_previously_purchased():
+    conn = _mem_conn()
+    products = [_prod("SKU1", "Milk"), _prod("SKU2", "Bread")]
+    count = sync_previously_purchased(conn, products)
+    assert count == 2
+    rows = conn.execute("SELECT COUNT(*) as c FROM order_items").fetchone()
+    assert rows["c"] == 2
+
+
+def test_sync_previously_purchased_updates_name():
+    conn = _mem_conn()
+    products = [_prod("SKU1", "Old Name")]
+    sync_previously_purchased(conn, products)
+    products = [_prod("SKU1", "New Name")]
+    sync_previously_purchased(conn, products)
+    # Should update name, not create duplicate
+    rows = conn.execute("SELECT product_name FROM order_items WHERE sku='SKU1'").fetchone()
+    assert rows["product_name"] == "New Name"
+
+
+# ── get_favorite_products ───────────────────────────────────────────
+
+
+def test_get_favorite_products():
+    conn = _mem_conn()
+    # Create products first (for brand join)
+    sync_products_from_search(conn, [_prod("SKU1", "Milk"), _prod("SKU2", "Bread")])
+    # Then sync to order_items
+    sync_previously_purchased(conn, [_prod("SKU1", "Milk"), _prod("SKU2", "Bread")])
+
+    favorites = get_favorite_products(conn, limit=10)
+    assert len(favorites) == 2
+    assert all("sku" in f for f in favorites)
+    assert all("brand" in f for f in favorites)
+
+
+def test_get_favorite_products_ordered_by_count():
+    conn = _mem_conn()
+    # Insert manually with different dates to simulate multiple purchases
+    conn.execute("INSERT INTO order_items (sku, product_name, purchased_at) VALUES ('SKU1', 'Milk', '2024-01-01')")
+    conn.execute("INSERT INTO order_items (sku, product_name, purchased_at) VALUES ('SKU1', 'Milk', '2024-01-02')")
+    conn.execute("INSERT INTO order_items (sku, product_name, purchased_at) VALUES ('SKU2', 'Bread', '2024-01-01')")
+    conn.commit()
+
+    favorites = get_favorite_products(conn, limit=10)
+    assert favorites[0]["sku"] == "SKU1"
+    assert favorites[0]["purchase_count"] == 2
+
+
+# ── get_favorite_brands ─────────────────────────────────────────────
+
+
+def test_get_favorite_brands():
+    conn = _mem_conn()
+    # Create products with brands
+    sync_products_from_search(conn, [
+        _prod("SKU1", "Milk A"),
+        _prod("SKU2", "Milk B"),
+        _prod("SKU3", "Other Brand"),
+    ])
+    # Update brand manually for testing
+    conn.execute("UPDATE products SET brand='TestBrand' WHERE sku IN ('SKU1', 'SKU2')")
+    conn.execute("UPDATE products SET brand='OtherBrand' WHERE sku='SKU3'")
+    conn.commit()
+
+    sync_previously_purchased(conn, [_prod("SKU1"), _prod("SKU2"), _prod("SKU3")])
+
+    brands = get_favorite_brands(conn, limit=10)
+    assert len(brands) >= 2
+    # TestBrand should be first with 2 products
+    assert brands[0]["brand"] == "TestBrand"
+    assert brands[0]["products"] == 2
+
+
+# ── get_purchase_stats ──────────────────────────────────────────────
+
+
+def test_get_purchase_stats():
+    conn = _mem_conn()
+    sync_previously_purchased(conn, [_prod("SKU1"), _prod("SKU2")])
+
+    stats = get_purchase_stats(conn)
+    assert stats["unique_products"] == 2
+    assert stats["total_purchase_records"] == 2
+    assert stats["tracking_since"] is not None

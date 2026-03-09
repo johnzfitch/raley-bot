@@ -56,7 +56,8 @@ coupon management, and Type 1 diabetes nutrition guidance.
 | offers    | Coupon management: `list` unclipped, `clip_all`, or `sync` to local DB |
 | plan      | Parse a freeform grocery list, find matches + totals. Does not add to cart |
 | price     | Price history for a SKU, or text search of local product DB |
-| orders    | Past order history. Syncs SKUs to local DB for frequency tracking |
+| orders    | Past order history with totals |
+| favorites | Purchase patterns: `products` (top items), `brands` (top brands), `sync` (refresh) |
 | deals     | Best-value items this week: clipped coupons + sale prices + price history |
 | memory    | Read/write shopping memory. Use `section=t1d/shopping/notes` to filter |
 | knowledge | Search T1D books. Use `book`+`heading` to fetch full section after searching |
@@ -105,6 +106,7 @@ from .api import (
     clip_all_offers,
     get_orders,
     get_products_by_sku,
+    get_previously_purchased,
     CartItem,
 )
 from .db import (
@@ -117,6 +119,10 @@ from .db import (
     is_good_deal,
     search_products_local,
     get_price_stats,
+    sync_previously_purchased,
+    get_favorite_products,
+    get_favorite_brands,
+    get_purchase_stats,
 )
 from .reasoning import (
     evaluate_options,
@@ -309,6 +315,21 @@ TOOLS = [
                 "limit": {"type": "integer"},
                 "summary_only": {"type": "boolean"},
                 "save_to_file": {"type": "boolean"},
+            },
+        },
+    ),
+    Tool(
+        name="favorites",
+        description="Purchase history analysis: top products, brands, and patterns.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "enum": ["products", "brands", "stats", "sync"],
+                    "description": "products=top bought items, brands=top brands, stats=summary, sync=refresh from API",
+                },
+                "limit": {"type": "integer"},
             },
         },
     ),
@@ -802,31 +823,27 @@ async def handle_orders(args: dict) -> str:
 
     all_orders = get_orders(client, days_back=days_back, limit=30)
 
-    # Sync order items to local DB for purchase frequency tracking
-    try:
-        conn = get_connection()
-        try:
-            sync_order_items(conn, all_orders)
-        finally:
-            conn.close()
-    except Exception:
-        pass
+    # Note: Orders API doesn't return lineItems, so we can't sync individual products here.
+    # Use `favorites sync` instead, which pulls from the "previously purchased" search filter.
 
     results = []
     total_spent = 0.0
     for o in all_orders:
+        # totalPrice is already in dollars (e.g., 87.33), not cents
         total_price = o.get("totalPrice", 0)
         if isinstance(total_price, dict):
-            total_price = total_price.get("centAmount", 0)
+            # Handle centAmount format if API ever changes
+            total_price = total_price.get("centAmount", 0) / 100
 
-        total_spent += total_price / 100
+        total_spent += total_price
 
         results.append(
             {
                 "id": str(o.get("orderId", ""))[-8:],
                 "date": str(o.get("createdDate", ""))[:10],
                 "status": o.get("orderStatus", {}).get("value", ""),
-                "total": f"${total_price/100:.2f}",
+                "total": f"${total_price:.2f}",
+                "product_total": f"${o.get('productAmount', 0):.2f}",
             }
         )
 
@@ -863,6 +880,41 @@ async def handle_auth(args: dict) -> str:
     """Check authentication status."""
     status = check_auth_status()
     return json.dumps(status)
+
+
+async def handle_favorites(args: dict) -> str:
+    """Get purchase history analysis: top products, brands, patterns."""
+    query_type = args.get("type", "products")
+    limit = min(args.get("limit", 20), 50)
+
+    conn = get_connection()
+    try:
+        if query_type == "sync":
+            # Refresh from API
+            client = get_api_client()
+            products = get_previously_purchased(client, limit=100)
+            synced = sync_previously_purchased(conn, products)
+            # Also sync to products table for price/brand data
+            sync_products_from_search(conn, products)
+            return json.dumps({
+                "synced": synced,
+                "message": f"Synced {synced} previously purchased products",
+            })
+
+        elif query_type == "brands":
+            brands = get_favorite_brands(conn, limit=limit)
+            return json.dumps({"brands": brands, "count": len(brands)})
+
+        elif query_type == "stats":
+            stats = get_purchase_stats(conn)
+            return json.dumps(stats)
+
+        else:  # products (default)
+            products = get_favorite_products(conn, limit=limit)
+            return json.dumps({"products": products, "count": len(products)})
+
+    finally:
+        conn.close()
 
 
 async def handle_deals(args: dict) -> str:
@@ -1165,6 +1217,7 @@ TOOL_HANDLERS = {
     "plan": handle_build_list,
     "price": handle_price_check,
     "orders": handle_orders,
+    "favorites": handle_favorites,
     "auth": handle_auth,
     "deals": handle_deals,
     "memory": handle_memory,
