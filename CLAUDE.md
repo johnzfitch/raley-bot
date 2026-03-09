@@ -11,7 +11,7 @@ Named after a person who makes grocery day feel less like a chore. Not the chain
 ```bash
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev,login]"
-pytest                           # 95 tests, <2s
+pytest                           # 89 tests, <2s
 pytest -v                        # verbose
 pytest tests/test_reasoning.py   # single module
 pytest -k "brand"                # by keyword
@@ -31,7 +31,7 @@ Audit trail: **[docs/AUDIT.md](docs/AUDIT.md)** -- what was broken, removed, and
 ### Module Map
 
 ```
-mcp_server.py   -- 12 MCP tools, the main interface
+mcp_server.py   -- 15 MCP tools, the main interface
   api.py        -- curl subprocess HTTP, all store endpoints
   db.py         -- SQLite WAL, price history, deal detection
   reasoning.py  -- heuristic scoring (NOT ml), purchase frequency
@@ -51,7 +51,7 @@ cli.py          -- Click + Rich, standalone from MCP
 
 **Search**: query -> `api.search_products()` (curl) -> `db.sync_products_from_search()` -> `unit_pricing.calculate_unit_prices()` -> `reasoning.evaluate_options()` -> JSON response
 
-**Plan** (grocery list): freeform text -> `cart_builder.parse_grocery_list()` -> per-item search + scoring + `should_buy_this_trip()` check -> JSON with matches, totals, `recently_bought` flags -> user confirms -> `handle_add()` per item
+**Plan** (grocery list): freeform text -> `cart_builder.parse_grocery_list()` -> per-item search + scoring + `should_buy_this_trip()` check -> JSON with matches, totals, `recently_bought` flags -> user confirms -> `add_plan` (bulk) or `add` per item
 
 ### Why Curl
 
