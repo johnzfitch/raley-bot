@@ -1017,7 +1017,7 @@ async def handle_memory(args: dict) -> str:
         section = args.get("section")
         limit = args.get("limit", 20)
 
-        # Section-filtered responses for token efficiency
+        # Section-filtered responses for token efficiency (full field set, not lossy)
         if section == "t1d":
             t = mem.t1d
             return json.dumps({
@@ -1025,9 +1025,12 @@ async def handle_memory(args: dict) -> str:
                 "gi_ceiling": t.gi_ceiling,
                 "bg_target": t.target_bg,
                 "avoid_high_gi": t.avoid_high_gi,
+                "prefer_low_carb": t.prefer_low_carb,
                 "icr": t.insulin_to_carb_ratio or None,
+                "correction_factor": t.correction_factor or None,
                 "avoid_items": t.avoid_items or None,
                 "safe_snacks": t.safe_snacks or None,
+                "favorite_proteins": t.favorite_proteins or None,
                 "favorite_recipes": t.favorite_recipes or None,
             })
         if section == "shopping":
@@ -1035,12 +1038,14 @@ async def handle_memory(args: dict) -> str:
             return json.dumps({
                 "weekly_budget": f"${s.weekly_budget:.2f}" if s.weekly_budget else None,
                 "prefer_store_brand": s.prefer_store_brand,
+                "max_unit_price_oz": s.max_unit_price_oz,
                 "staples": s.staples or None,
                 "avoid_brands": s.avoid_brands or None,
+                "preferred_store_section": s.preferred_store_section or None,
             })
         if section == "notes":
-            # Paginated notes - most recent first (by key alpha, or could track timestamps)
-            notes = dict(sorted(mem.notes.items(), reverse=True)[:limit])
+            # Paginated notes (alphabetical by key - no timestamp tracking)
+            notes = dict(sorted(mem.notes.items())[:limit])
             return json.dumps({"notes": notes, "total": len(mem.notes)})
 
         # Full summary (default)
@@ -1139,9 +1144,12 @@ async def handle_add_plan(args: dict) -> str:
     success = api_add_to_cart(client, cart_items)
     result: dict[str, Any] = {
         "ok": success,
-        "added": len(cart_items),
+        "attempted": len(cart_items),
+        "added": len(cart_items) if success else 0,
         "skus": [c.sku for c in cart_items],
     }
+    if not success:
+        result["error"] = "Cart API returned failure"
     if errors:
         result["parse_errors"] = errors
 

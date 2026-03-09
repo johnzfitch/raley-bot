@@ -339,3 +339,152 @@ async def test_handle_knowledge_empty_query_lists_books():
     with patch("raley_assistant.mcp_server.list_books", return_value=[{"name": "type1-recipes", "size_kb": 180}]):
         result = json.loads(await handle_knowledge({"q": ""}))
         assert "books" in result
+
+
+# ── handle_memory section filtering ──────────────────────────────
+
+async def test_handle_memory_section_t1d_includes_all_fields():
+    from raley_assistant.mcp_server import handle_memory
+    from raley_assistant.memory import ShoppingMemory, T1DConfig
+
+    mem = ShoppingMemory(
+        t1d=T1DConfig(
+            carb_target_per_meal=50,
+            gi_ceiling=60,
+            correction_factor="1:40",
+            prefer_low_carb=True,
+            favorite_proteins=["chicken", "salmon"],
+        )
+    )
+    with patch("raley_assistant.mcp_server.load_memory", return_value=mem):
+        result = json.loads(await handle_memory({"action": "get", "section": "t1d"}))
+
+    # All T1D fields must be present (not lossy)
+    assert result["gi_ceiling"] == 60
+    assert result["correction_factor"] == "1:40"
+    assert result["prefer_low_carb"] is True
+    assert result["favorite_proteins"] == ["chicken", "salmon"]
+
+
+async def test_handle_memory_section_shopping_includes_all_fields():
+    from raley_assistant.mcp_server import handle_memory
+    from raley_assistant.memory import ShoppingMemory, ShoppingConfig
+
+    mem = ShoppingMemory(
+        shopping=ShoppingConfig(
+            weekly_budget=150.0,
+            max_unit_price_oz=0.25,
+            preferred_store_section=["produce", "dairy"],
+        )
+    )
+    with patch("raley_assistant.mcp_server.load_memory", return_value=mem):
+        result = json.loads(await handle_memory({"action": "get", "section": "shopping"}))
+
+    assert result["weekly_budget"] == "$150.00"
+    assert result["max_unit_price_oz"] == 0.25
+    assert result["preferred_store_section"] == ["produce", "dairy"]
+
+
+async def test_handle_memory_section_notes_pagination():
+    from raley_assistant.mcp_server import handle_memory
+    from raley_assistant.memory import ShoppingMemory
+
+    mem = ShoppingMemory(notes={"a_note": "first", "b_note": "second", "c_note": "third"})
+    with patch("raley_assistant.mcp_server.load_memory", return_value=mem):
+        result = json.loads(await handle_memory({"action": "get", "section": "notes", "limit": 2}))
+
+    assert result["total"] == 3
+    assert len(result["notes"]) == 2
+
+
+# ── handle_add_plan ──────────────────────────────────────────────
+
+@patch("raley_assistant.mcp_server.api_add_to_cart")
+@patch("raley_assistant.mcp_server.get_api_client")
+async def test_handle_add_plan_success(mock_client, mock_add):
+    from raley_assistant.mcp_server import handle_add_plan
+
+    mock_client.return_value = MagicMock()
+    mock_add.return_value = True
+
+    result = json.loads(await handle_add_plan({"items": "SKU1:499,SKU2:299:2"}))
+
+    assert result["ok"] is True
+    assert result["added"] == 2
+    assert result["skus"] == ["SKU1", "SKU2"]
+
+
+@patch("raley_assistant.mcp_server.api_add_to_cart")
+@patch("raley_assistant.mcp_server.get_api_client")
+async def test_handle_add_plan_failure_reports_zero_added(mock_client, mock_add):
+    from raley_assistant.mcp_server import handle_add_plan
+
+    mock_client.return_value = MagicMock()
+    mock_add.return_value = False
+
+    result = json.loads(await handle_add_plan({"items": "SKU1:499"}))
+
+    assert result["ok"] is False
+    assert result["added"] == 0
+    assert result["attempted"] == 1
+    assert "error" in result
+
+
+async def test_handle_add_plan_parse_errors():
+    from raley_assistant.mcp_server import handle_add_plan
+
+    with patch("raley_assistant.mcp_server.get_api_client"):
+        result = json.loads(await handle_add_plan({"items": "invalid,also_bad"}))
+
+    assert "error" in result
+    assert "parse_errors" in result
+
+
+# ── handle_read_saved ────────────────────────────────────────────
+
+async def test_handle_read_saved_lists_files():
+    from raley_assistant.mcp_server import handle_read_saved
+    from pathlib import Path
+    from unittest.mock import PropertyMock
+
+    mock_file = MagicMock()
+    mock_file.name = "cart-20260308-120000.json"
+    mock_file.stat.return_value.st_mtime = 1000
+
+    with patch.object(Path, "exists", return_value=True), \
+         patch.object(Path, "glob", return_value=[mock_file]):
+        result = json.loads(await handle_read_saved({}))
+
+    assert "files" in result
+
+
+async def test_handle_read_saved_file_not_found():
+    from raley_assistant.mcp_server import handle_read_saved
+    from pathlib import Path
+
+    with patch.object(Path, "exists", return_value=False), \
+         patch.object(Path, "glob", return_value=[]):
+        result = json.loads(await handle_read_saved({"filename": "nonexistent"}))
+
+    assert "error" in result
+
+
+# ── handle_knowledge fetch mode ──────────────────────────────────
+
+async def test_handle_knowledge_fetch_heading():
+    from raley_assistant.mcp_server import handle_knowledge
+    from raley_assistant.knowledge import KNOWLEDGE_DIR
+    from pathlib import Path
+    import tempfile
+    import os
+
+    # Create a temporary knowledge directory with a test book
+    with tempfile.TemporaryDirectory() as tmpdir:
+        book_path = Path(tmpdir) / "testbook.md"
+        book_path.write_text("# Introduction\nSome intro text\n\n# Recipes\nRecipe content here\n")
+
+        with patch("raley_assistant.knowledge.KNOWLEDGE_DIR", Path(tmpdir)):
+            result = json.loads(await handle_knowledge({"book": "testbook", "heading": "Recipes"}))
+
+    assert result["heading"] == "Recipes"
+    assert "Recipe content here" in result["content"]
