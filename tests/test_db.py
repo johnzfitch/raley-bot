@@ -242,19 +242,34 @@ def test_sync_previously_purchased():
     products = [_prod("SKU1", "Milk"), _prod("SKU2", "Bread")]
     count = sync_previously_purchased(conn, products)
     assert count == 2
-    rows = conn.execute("SELECT COUNT(*) as c FROM order_items").fetchone()
+    rows = conn.execute("SELECT COUNT(*) as c FROM purchase_history").fetchone()
     assert rows["c"] == 2
 
 
-def test_sync_previously_purchased_updates_name():
+def test_sync_previously_purchased_updates_last_seen():
     conn = _mem_conn()
     products = [_prod("SKU1", "Old Name")]
     sync_previously_purchased(conn, products)
+    # Sync again - should update last_seen and name, not create duplicate
     products = [_prod("SKU1", "New Name")]
     sync_previously_purchased(conn, products)
-    # Should update name, not create duplicate
-    rows = conn.execute("SELECT product_name FROM order_items WHERE sku='SKU1'").fetchone()
+    rows = conn.execute("SELECT product_name, first_seen, last_seen FROM purchase_history WHERE sku='SKU1'").fetchone()
     assert rows["product_name"] == "New Name"
+    # first_seen should remain unchanged, last_seen updated
+    assert rows["first_seen"] == rows["last_seen"]  # Same day in test
+
+
+def test_sync_previously_purchased_preserves_first_seen():
+    conn = _mem_conn()
+    # Manually insert with old first_seen
+    conn.execute("INSERT INTO purchase_history (sku, product_name, brand, first_seen, last_seen) VALUES ('SKU1', 'Milk', 'Brand', '2024-01-01', '2024-01-01')")
+    conn.commit()
+    # Sync again
+    products = [_prod("SKU1", "Milk Updated")]
+    sync_previously_purchased(conn, products)
+    rows = conn.execute("SELECT first_seen, last_seen FROM purchase_history WHERE sku='SKU1'").fetchone()
+    assert rows["first_seen"] == "2024-01-01"  # Preserved
+    assert rows["last_seen"] != "2024-01-01"   # Updated to today
 
 
 # ── get_favorite_products ───────────────────────────────────────────
@@ -262,28 +277,30 @@ def test_sync_previously_purchased_updates_name():
 
 def test_get_favorite_products():
     conn = _mem_conn()
-    # Create products first (for brand join)
+    # Create products first (for price join)
     sync_products_from_search(conn, [_prod("SKU1", "Milk"), _prod("SKU2", "Bread")])
-    # Then sync to order_items
+    # Then sync to purchase_history
     sync_previously_purchased(conn, [_prod("SKU1", "Milk"), _prod("SKU2", "Bread")])
 
     favorites = get_favorite_products(conn, limit=10)
     assert len(favorites) == 2
     assert all("sku" in f for f in favorites)
     assert all("brand" in f for f in favorites)
+    assert all("first_seen" in f for f in favorites)
+    assert all("last_seen" in f for f in favorites)
 
 
-def test_get_favorite_products_ordered_by_count():
+def test_get_favorite_products_ordered_by_recency():
     conn = _mem_conn()
-    # Insert manually with different dates to simulate multiple purchases
-    conn.execute("INSERT INTO order_items (sku, product_name, purchased_at) VALUES ('SKU1', 'Milk', '2024-01-01')")
-    conn.execute("INSERT INTO order_items (sku, product_name, purchased_at) VALUES ('SKU1', 'Milk', '2024-01-02')")
-    conn.execute("INSERT INTO order_items (sku, product_name, purchased_at) VALUES ('SKU2', 'Bread', '2024-01-01')")
+    # Insert with different last_seen dates
+    conn.execute("INSERT INTO purchase_history (sku, product_name, brand, first_seen, last_seen) VALUES ('SKU1', 'Milk', '', '2024-01-01', '2024-01-15')")
+    conn.execute("INSERT INTO purchase_history (sku, product_name, brand, first_seen, last_seen) VALUES ('SKU2', 'Bread', '', '2024-01-01', '2024-01-20')")
     conn.commit()
 
     favorites = get_favorite_products(conn, limit=10)
-    assert favorites[0]["sku"] == "SKU1"
-    assert favorites[0]["purchase_count"] == 2
+    # Most recently seen should be first
+    assert favorites[0]["sku"] == "SKU2"
+    assert favorites[1]["sku"] == "SKU1"
 
 
 # ── get_favorite_brands ─────────────────────────────────────────────
@@ -291,24 +308,18 @@ def test_get_favorite_products_ordered_by_count():
 
 def test_get_favorite_brands():
     conn = _mem_conn()
-    # Create products with brands
-    sync_products_from_search(conn, [
-        _prod("SKU1", "Milk A"),
-        _prod("SKU2", "Milk B"),
-        _prod("SKU3", "Other Brand"),
-    ])
-    # Update brand manually for testing
-    conn.execute("UPDATE products SET brand='TestBrand' WHERE sku IN ('SKU1', 'SKU2')")
-    conn.execute("UPDATE products SET brand='OtherBrand' WHERE sku='SKU3'")
+    # Insert directly into purchase_history with brands
+    conn.execute("INSERT INTO purchase_history (sku, product_name, brand, first_seen, last_seen) VALUES ('SKU1', 'Milk A', 'TestBrand', '2024-01-01', '2024-01-15')")
+    conn.execute("INSERT INTO purchase_history (sku, product_name, brand, first_seen, last_seen) VALUES ('SKU2', 'Milk B', 'TestBrand', '2024-01-01', '2024-01-15')")
+    conn.execute("INSERT INTO purchase_history (sku, product_name, brand, first_seen, last_seen) VALUES ('SKU3', 'Other', 'OtherBrand', '2024-01-01', '2024-01-15')")
     conn.commit()
 
-    sync_previously_purchased(conn, [_prod("SKU1"), _prod("SKU2"), _prod("SKU3")])
-
     brands = get_favorite_brands(conn, limit=10)
-    assert len(brands) >= 2
+    assert len(brands) == 2
     # TestBrand should be first with 2 products
     assert brands[0]["brand"] == "TestBrand"
     assert brands[0]["products"] == 2
+    assert "last_seen" in brands[0]
 
 
 # ── get_purchase_stats ──────────────────────────────────────────────
@@ -319,6 +330,6 @@ def test_get_purchase_stats():
     sync_previously_purchased(conn, [_prod("SKU1"), _prod("SKU2")])
 
     stats = get_purchase_stats(conn)
-    assert stats["unique_products"] == 2
-    assert stats["total_purchase_records"] == 2
+    assert stats["products_tracked"] == 2
     assert stats["tracking_since"] is not None
+    assert stats["last_sync"] is not None

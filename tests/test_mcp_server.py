@@ -490,3 +490,64 @@ async def test_handle_knowledge_fetch_heading():
 
     assert result["heading"] == "Recipes"
     assert "Recipe content here" in result["content"]
+
+
+# ── handle_orders ─────────────────────────────────────────────────
+
+
+@patch("raley_assistant.mcp_server.get_orders")
+@patch("raley_assistant.mcp_server.get_api_client")
+async def test_handle_orders_parses_dollar_totals(mock_client, mock_orders):
+    """Verify totalPrice is treated as dollars, not cents.
+
+    Fixture based on actual API response where totalPrice=87.33 (dollars).
+    """
+    from raley_assistant.mcp_server import handle_orders
+
+    mock_client.return_value = MagicMock()
+    mock_orders.return_value = [
+        {
+            "orderId": 13568304,
+            "createdDate": "2026-02-12T21:26:51.433",
+            "orderStatus": {"id": "10", "value": "Complete"},
+            "productAmount": 63.92,
+            "totalPrice": 87.33,  # Already in dollars
+        },
+        {
+            "orderId": 13567941,
+            "createdDate": "2026-02-12T20:00:00.000",
+            "orderStatus": {"id": "10", "value": "Complete"},
+            "productAmount": 52.98,
+            "totalPrice": 61.91,
+        },
+    ]
+
+    result = json.loads(await handle_orders({"days": 90, "limit": 10}))
+
+    assert result["count"] == 2
+    # Totals should be in dollars, not divided by 100 again
+    assert result["orders"][0]["total"] == "$87.33"
+    assert result["orders"][1]["total"] == "$61.91"
+    assert result["orders"][0]["product_total"] == "$63.92"
+
+
+@patch("raley_assistant.mcp_server.get_orders")
+@patch("raley_assistant.mcp_server.get_api_client")
+async def test_handle_orders_handles_cent_amount_format(mock_client, mock_orders):
+    """Handle hypothetical centAmount format if API ever changes."""
+    from raley_assistant.mcp_server import handle_orders
+
+    mock_client.return_value = MagicMock()
+    mock_orders.return_value = [
+        {
+            "orderId": 123,
+            "createdDate": "2026-01-01T00:00:00.000",
+            "orderStatus": {"value": "Complete"},
+            "productAmount": 50.00,
+            "totalPrice": {"centAmount": 5000, "currencyCode": "USD"},
+        },
+    ]
+
+    result = json.loads(await handle_orders({"days": 90, "limit": 10}))
+
+    assert result["orders"][0]["total"] == "$50.00"

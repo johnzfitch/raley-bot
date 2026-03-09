@@ -71,6 +71,16 @@ CREATE TABLE IF NOT EXISTS order_items (
 
 CREATE INDEX IF NOT EXISTS idx_order_items_sku ON order_items(sku);
 CREATE INDEX IF NOT EXISTS idx_order_items_purchased ON order_items(purchased_at);
+
+CREATE TABLE IF NOT EXISTS purchase_history (
+    sku TEXT PRIMARY KEY,
+    product_name TEXT DEFAULT '',
+    brand TEXT DEFAULT '',
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_purchase_history_last_seen ON purchase_history(last_seen);
 """
 
 
@@ -432,11 +442,11 @@ def get_price_trend(conn: sqlite3.Connection, sku: str, days: int = 30) -> list[
 
 
 def sync_previously_purchased(conn: sqlite3.Connection, products: list) -> int:
-    """Sync products from the 'previously purchased' API into order_items.
+    """Sync products from the 'previously purchased' API into purchase_history.
 
-    Since the orders API doesn't return line items, we use the previously
-    purchased search filter to build purchase history. Each sync increments
-    a seen count and updates last_seen date.
+    Tracks first_seen (when product first appeared) and last_seen (most recent
+    sync where it appeared). Products that stop appearing in the API naturally
+    have older last_seen dates.
 
     Returns number of products synced.
     """
@@ -444,16 +454,17 @@ def sync_previously_purchased(conn: sqlite3.Connection, products: list) -> int:
     count = 0
 
     for p in products:
-        # Use INSERT OR REPLACE to track each product
-        # We store today's date as purchased_at since we don't know actual dates
+        brand = getattr(p, "brand", "") or ""
         conn.execute(
             """
-            INSERT INTO order_items (sku, product_name, purchased_at, order_id)
-            VALUES (?, ?, ?, 'previously_purchased')
-            ON CONFLICT(sku, purchased_at) DO UPDATE SET
-                product_name = excluded.product_name
+            INSERT INTO purchase_history (sku, product_name, brand, first_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(sku) DO UPDATE SET
+                product_name = excluded.product_name,
+                brand = CASE WHEN excluded.brand != '' THEN excluded.brand ELSE purchase_history.brand END,
+                last_seen = excluded.last_seen
             """,
-            (p.sku, p.name, now),
+            (p.sku, p.name, brand, now, now),
         )
         count += 1
 
@@ -462,24 +473,23 @@ def sync_previously_purchased(conn: sqlite3.Connection, products: list) -> int:
 
 
 def get_favorite_products(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
-    """Get most frequently purchased products.
+    """Get previously purchased products, ordered by recency.
 
-    Returns products ordered by number of times seen in purchase history.
+    Returns products from purchase_history joined with current price data.
     """
     rows = conn.execute(
         """
         SELECT
-            oi.sku,
-            oi.product_name,
-            p.brand,
-            COUNT(*) as purchase_count,
-            MAX(oi.purchased_at) as last_purchased,
+            ph.sku,
+            ph.product_name,
+            ph.brand,
+            ph.first_seen,
+            ph.last_seen,
             p.price_cents,
             p.sale_price_cents
-        FROM order_items oi
-        LEFT JOIN products p ON oi.sku = p.sku
-        GROUP BY oi.sku
-        ORDER BY purchase_count DESC, last_purchased DESC
+        FROM purchase_history ph
+        LEFT JOIN products p ON ph.sku = p.sku
+        ORDER BY ph.last_seen DESC
         LIMIT ?
         """,
         (limit,),
@@ -490,8 +500,8 @@ def get_favorite_products(conn: sqlite3.Connection, limit: int = 20) -> list[dic
             "sku": r["sku"],
             "name": r["product_name"],
             "brand": r["brand"] or "",
-            "purchase_count": r["purchase_count"],
-            "last_purchased": r["last_purchased"],
+            "first_seen": r["first_seen"],
+            "last_seen": r["last_seen"],
             "current_price": r["sale_price_cents"] or r["price_cents"],
         }
         for r in rows
@@ -499,21 +509,20 @@ def get_favorite_products(conn: sqlite3.Connection, limit: int = 20) -> list[dic
 
 
 def get_favorite_brands(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
-    """Get most frequently purchased brands.
+    """Get most common brands from purchase history.
 
-    Returns brands ordered by number of distinct products purchased.
+    Returns brands ordered by number of distinct products.
     """
     rows = conn.execute(
         """
         SELECT
-            p.brand,
-            COUNT(DISTINCT oi.sku) as product_count,
-            COUNT(*) as total_purchases
-        FROM order_items oi
-        JOIN products p ON oi.sku = p.sku
-        WHERE p.brand != '' AND p.brand IS NOT NULL
-        GROUP BY p.brand
-        ORDER BY product_count DESC, total_purchases DESC
+            ph.brand,
+            COUNT(*) as product_count,
+            MAX(ph.last_seen) as last_seen
+        FROM purchase_history ph
+        WHERE ph.brand != '' AND ph.brand IS NOT NULL
+        GROUP BY ph.brand
+        ORDER BY product_count DESC, last_seen DESC
         LIMIT ?
         """,
         (limit,),
@@ -523,7 +532,7 @@ def get_favorite_brands(conn: sqlite3.Connection, limit: int = 10) -> list[dict]
         {
             "brand": r["brand"],
             "products": r["product_count"],
-            "purchases": r["total_purchases"],
+            "last_seen": r["last_seen"],
         }
         for r in rows
     ]
@@ -532,20 +541,20 @@ def get_favorite_brands(conn: sqlite3.Connection, limit: int = 10) -> list[dict]
 def get_purchase_stats(conn: sqlite3.Connection) -> dict:
     """Get overall purchase history statistics."""
     total_products = conn.execute(
-        "SELECT COUNT(DISTINCT sku) as c FROM order_items"
-    ).fetchone()["c"]
-
-    total_purchases = conn.execute(
-        "SELECT COUNT(*) as c FROM order_items"
+        "SELECT COUNT(*) as c FROM purchase_history"
     ).fetchone()["c"]
 
     date_range = conn.execute(
-        "SELECT MIN(purchased_at) as first, MAX(purchased_at) as last FROM order_items"
+        "SELECT MIN(first_seen) as first, MAX(last_seen) as last FROM purchase_history"
     ).fetchone()
 
+    brand_count = conn.execute(
+        "SELECT COUNT(DISTINCT brand) as c FROM purchase_history WHERE brand != ''"
+    ).fetchone()["c"]
+
     return {
-        "unique_products": total_products,
-        "total_purchase_records": total_purchases,
+        "products_tracked": total_products,
+        "brands_tracked": brand_count,
         "tracking_since": date_range["first"] if date_range else None,
         "last_sync": date_range["last"] if date_range else None,
     }

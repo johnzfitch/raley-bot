@@ -890,12 +890,25 @@ async def handle_favorites(args: dict) -> str:
     conn = get_connection()
     try:
         if query_type == "sync":
-            # Refresh from API
+            # Refresh from API - paginate to get all previously purchased
             client = get_api_client()
-            products = get_previously_purchased(client, limit=100)
-            synced = sync_previously_purchased(conn, products)
+            all_products = []
+            offset = 0
+            page_size = 30
+            max_pages = 10  # Safety limit: 300 products max
+
+            for _ in range(max_pages):
+                page = get_previously_purchased(client, offset=offset, limit=page_size)
+                if not page:
+                    break
+                all_products.extend(page)
+                if len(page) < page_size:
+                    break  # Last page
+                offset += page_size
+
+            synced = sync_previously_purchased(conn, all_products)
             # Also sync to products table for price/brand data
-            sync_products_from_search(conn, products)
+            sync_products_from_search(conn, all_products)
             return json.dumps({
                 "synced": synced,
                 "message": f"Synced {synced} previously purchased products",
