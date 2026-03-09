@@ -55,7 +55,7 @@ coupon management, and Type 1 diabetes nutrition guidance.
 | cart      | View current cart. Use `summary_only=true` for a quick total |
 | offers    | Coupon management: `list` unclipped, `clip_all`, or `sync` to local DB |
 | plan      | Parse a freeform grocery list, find matches + totals. Does not add to cart |
-| price     | Price history for a SKU, or text search of local product DB |
+| price     | Price history for a SKU, search local DB, or `clear=true` to reset cache |
 | orders    | Past order history with totals |
 | favorites | Purchase history: `products` (recent), `brands` (by product count), `sync` (refresh) |
 | deals     | Best-value items this week: clipped coupons + sale prices + price history |
@@ -82,6 +82,16 @@ at checkout — no promo code needed.
 and preferences. Use `memory note` to record discoveries (liked recipes,
 items to avoid, brands that were good value). Use `memory set` to update
 structured fields like `gi_ceiling` or `carb_target_per_meal`.
+
+**Store/location change**: If items show "No Longer Available" or SKUs don't
+match what the user sees, run `price clear=true` to reset the local cache.
+The cache stores SKUs by store — changing delivery address requires a refresh.
+
+**Weight/size data**: The API often lacks accurate pack weights for meat and
+produce. When comparing items by unit price ($/lb):
+- If weight is missing, flag it: "Weight not in API — verify pack size"
+- Use $/lb from the price field as truth for "sold by weight" items
+- Ask user to confirm pack size before making price comparisons
 
 ## T1D Nutrition
 
@@ -296,12 +306,16 @@ TOOLS = [
     ),
     Tool(
         name="price",
-        description="Price history by SKU, or search local DB.",
+        description="Price history by SKU, search local DB, or clear cache. Use clear=true when user changes store/delivery location.",
         inputSchema={
             "type": "object",
             "properties": {
                 "sku": {"type": "string"},
                 "q": {"type": "string"},
+                "clear": {
+                    "type": "string",
+                    "description": "Clear cache: 'true' for products only, 'all' for everything",
+                },
             },
         },
     ),
@@ -767,6 +781,22 @@ async def handle_price_check(args: dict) -> str:
     """Check price history or search local DB."""
     conn = get_connection()
     try:
+        # Clear cache when store/location changes
+        if args.get("clear"):
+            tables = ["products", "price_history"]
+            if args.get("clear") == "all":
+                tables.extend(["purchase_history", "coupons", "order_items"])
+            counts = {}
+            for table in tables:
+                count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                conn.execute(f"DELETE FROM {table}")
+                counts[table] = count
+            conn.commit()
+            return json.dumps({
+                "cleared": counts,
+                "message": "Cache cleared. Fresh searches will rebuild from API.",
+            })
+
         if args.get("q"):
             results = search_products_local(conn, args["q"], 10)
             if not results:
