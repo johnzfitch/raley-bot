@@ -186,7 +186,7 @@ def search(query: str, sale: bool, limit: int):
         console=console,
     ) as progress:
         progress.add_task(f"Searching '{query}'...", total=None)
-        products = search_products(client, query, on_sale=sale, limit=limit)
+        products = search_products(client, query, on_sale=sale, limit=min(limit, 50))
 
     if not products:
         console.print("[yellow]No products found.[/yellow]")
@@ -401,7 +401,8 @@ def orders():
         elif "total" in order:
             total_val = order["total"]
             if isinstance(total_val, (int, float)):
-                total = total_val if total_val < 1000 else total_val / 100
+                # API returns cents; convert to dollars
+                total = total_val / 100
         else:
             product_amt = order.get("productAmount", 0)
             tax_amt = order.get("productTaxAmount", 0)

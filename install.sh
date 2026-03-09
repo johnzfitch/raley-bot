@@ -19,6 +19,8 @@ done
 
 if ! command -v uv &>/dev/null; then
   info "Installing uv..."
+  info "Note: downloading installer from https://astral.sh/uv/install.sh"
+  info "For manual install, see: https://docs.astral.sh/uv/getting-started/installation/"
   curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
 fi
@@ -45,8 +47,12 @@ mkdir -p "$BIN_DIR"
 for cmd in raley raley-bot raley-mcp; do
   target="$INSTALL_DIR/.venv/bin/$cmd"
   link="$BIN_DIR/$cmd"
+  if [ -d "$link" ] && [ ! -L "$link" ]; then
+    warn "Skipping $link: is a directory, not removing"
+    continue
+  fi
   if [ -L "$link" ] || [ -e "$link" ]; then
-    rm "$link"
+    rm -f "$link"
   fi
   ln -s "$target" "$link"
 done
@@ -78,14 +84,20 @@ configure_mcp() {
   mkdir -p "$config_dir"
 
   if [ -f "$config_file" ]; then
-    # File exists — inject into mcpServers if present, or add mcpServers block
-    if grep -q '"mcpServers"' "$config_file" 2>/dev/null; then
-      # Add entry after "mcpServers": {
-      sed -i 's/"mcpServers"\s*:\s*{/"mcpServers": {\n    '"$MCP_ENTRY"',/' "$config_file"
-    else
-      # Add mcpServers block before closing brace
-      sed -i 's/}$/,"mcpServers": {'"$MCP_ENTRY"'}}/' "$config_file"
-    fi
+    # File exists — use Python for safe JSON manipulation instead of sed
+    python3 -c "
+import json, sys
+with open('$config_file') as f:
+    cfg = json.load(f)
+cfg.setdefault('mcpServers', {})
+cfg['mcpServers']['raley-bot'] = {'command': '$MCP_CMD', 'args': []}
+with open('$config_file', 'w') as f:
+    json.dump(cfg, f, indent=2)
+    f.write('\n')
+" 2>/dev/null || {
+      warn "Could not update $config_file automatically."
+      warn "Add raley-bot MCP config manually."
+    }
   else
     # Create fresh config
     printf '{\n  "mcpServers": {\n    "raley-bot": {\n      "command": "%s",\n      "args": []\n    }\n  }\n}\n' "$MCP_CMD" > "$config_file"

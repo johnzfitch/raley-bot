@@ -27,14 +27,19 @@ _COOKIE_UNSAFE_RE = re.compile(r"[\x00-\x1f\x7f]|%0[dDaA]")
 # RFC 7230 token characters for header names
 _HEADER_TOKEN_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
 
+_ALLOWED_HOSTS = {"www.raleys.com", "raleys.com"}
+
 
 def _validate_url(url: str) -> None:
-    """Validate URL has allowed scheme and host."""
+    """Validate URL has allowed scheme and host within raleys.com."""
     parsed = urlsplit(url)
-    if parsed.scheme not in ("http", "https"):
+    if parsed.scheme not in ("https",):
         raise ValueError(f"Invalid URL scheme: {parsed.scheme}")
     if not parsed.netloc:
         raise ValueError("URL missing host")
+    host = parsed.hostname or ""
+    if host not in _ALLOWED_HOSTS and not host.endswith(".raleys.com"):
+        raise ValueError(f"Host not allowed: {host}")
 
 
 def _is_safe_cookie_component(name: str, value: str) -> bool:

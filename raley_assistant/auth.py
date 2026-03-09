@@ -13,7 +13,15 @@ except ImportError:
     HELIUM_AVAILABLE = False
 
 RALEYS_LOGIN_URL = "https://www.raleys.com/account/signin"
-REQUIRED_COOKIES = ["FLDR.Auth", "FLDR.Session", "FLDR.CSRF"]
+
+
+def _is_raleys_domain(domain: str) -> bool:
+    """Check if domain is exactly raleys.com or a subdomain of it."""
+    domain = domain.lstrip(".").lower()
+    return domain == "raleys.com" or domain.endswith(".raleys.com")
+
+
+REQUIRED_COOKIES = ["FLDR.Auth", "FLDR.Session", "FLDR.User", "FLDR.CSRF", "FLDR.RememberMe"]
 COOKIES_PATH = Path.home() / ".config" / "raley-assistant" / "cookies.json"
 
 
@@ -49,7 +57,7 @@ def interactive_login(timeout: int = 300) -> tuple[bool, str]:
             helium.kill_browser()
         except Exception:
             pass
-        return False, f"Error during login: {str(e)}"
+        return False, "Error during login. Check that Chrome is installed and try again."
 
 
 def save_cookies_from_selenium(cookies: list[dict]) -> None:
@@ -68,12 +76,13 @@ def save_cookies_from_selenium(cookies: list[dict]) -> None:
             "expires": c.get("expiry"),
         }
         for c in cookies
-        if c["domain"].endswith("raleys.com")
+        if _is_raleys_domain(c.get("domain", ""))
     ]
 
     # Write with restrictive permissions
     import os
     fd = os.open(str(COOKIES_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump({"cookies": formatted}, f, indent=2)
 
@@ -160,5 +169,5 @@ def check_auth_status() -> dict:
             "authenticated": False,
             "cookies_found": 0,
             "path": str(COOKIES_PATH),
-            "message": f"Error reading cookies: {str(e)}",
+            "message": "Error reading cookies. Try 'raley-bot login' to re-authenticate.",
         }

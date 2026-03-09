@@ -162,7 +162,7 @@ Format:
 
 ## Troubleshooting
 
-**Session expired?** → `raley login`
+**Session expired?** → `raley-bot login`
 
 **Browser login not working?** → Export cookies manually with a browser extension ("Cookie-Editor" or "EditThisCookie"), save as JSON, then `raley login --file cookies.json`
 

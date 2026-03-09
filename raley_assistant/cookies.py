@@ -13,6 +13,13 @@ from datetime import datetime, timezone
 COOKIES_DIR = Path.home() / ".config" / "raley-assistant"
 COOKIES_FILE = COOKIES_DIR / "cookies.json"
 
+
+def _is_raleys_domain(domain: str) -> bool:
+    """Check if domain is exactly raleys.com or a subdomain of it."""
+    domain = domain.lstrip(".").lower()
+    return domain == "raleys.com" or domain.endswith(".raleys.com")
+
+
 # Required cookies for API access
 REQUIRED_COOKIES = [
     "FLDR.Auth",       # Main auth token
@@ -40,7 +47,10 @@ def load_cookies_from_devtools(json_path: Path | str) -> list[dict[str, Any]]:
     else:
         raise ValueError("Unrecognized cookie format. Expected array or {cookies: [...]}.")
 
-    return [c for c in cookies if c.get("domain", "").endswith("raleys.com")]
+    return [
+        c for c in cookies
+        if _is_raleys_domain(c.get("domain", ""))
+    ]
 
 
 def validate_cookies(cookies: list[dict[str, Any]]) -> tuple[bool, list[str]]:
@@ -100,6 +110,7 @@ def save_cookies(cookies: list[dict[str, Any]]) -> None:
     # Write with restrictive permissions (owner-only read/write)
     import os
     fd = os.open(str(COOKIES_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(cookies, f, indent=2)
 

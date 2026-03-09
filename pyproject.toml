@@ -34,7 +34,6 @@ dependencies = [
     "rich",
     "click",
     "mcp>=1.0.0",
-    "helium",
 ]
 
 [project.urls]
@@ -42,6 +41,9 @@ Repository = "https://github.com/johnzfitch/raley-bot"
 "Bug Tracker" = "https://github.com/johnzfitch/raley-bot/issues"
 
 [project.optional-dependencies]
+login = [
+    "helium",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
