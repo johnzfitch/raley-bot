@@ -495,17 +495,19 @@ def get_favorite_products(conn: sqlite3.Connection, limit: int = 20) -> list[dic
         (limit,),
     ).fetchall()
 
-    return [
-        {
+    results = []
+    for r in rows:
+        price_cents = r["sale_price_cents"] or r["price_cents"]
+        results.append({
             "sku": r["sku"],
             "name": r["product_name"],
             "brand": r["brand"] or "",
             "first_seen": r["first_seen"],
             "last_seen": r["last_seen"],
-            "current_price": r["sale_price_cents"] or r["price_cents"],
-        }
-        for r in rows
-    ]
+            "price_cents": price_cents,
+            "price": f"${price_cents / 100:.2f}" if price_cents else None,
+        })
+    return results
 
 
 def get_favorite_brands(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
