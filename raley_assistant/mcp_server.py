@@ -345,7 +345,7 @@ TOOLS = [
     ),
     Tool(
         name="add_plan",
-        description="Bulk add items from a plan result to cart. Pass the plan JSON or a comma-separated 'sku:cents:qty' list.",
+        description="Bulk add items to cart. Pass comma-separated 'sku:cents' or 'sku:cents:qty' pairs.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -1017,16 +1017,16 @@ async def handle_memory(args: dict) -> str:
         section = args.get("section")
         limit = args.get("limit", 20)
 
-        # Section-filtered responses for token efficiency (full field set, not lossy)
+        # Section-filtered responses — use exact dataclass field names for round-trip safety
         if section == "t1d":
             t = mem.t1d
             return json.dumps({
-                "carb_target_per_meal_g": t.carb_target_per_meal,
+                "carb_target_per_meal": t.carb_target_per_meal,
                 "gi_ceiling": t.gi_ceiling,
-                "bg_target": t.target_bg,
+                "target_bg": t.target_bg,
                 "avoid_high_gi": t.avoid_high_gi,
                 "prefer_low_carb": t.prefer_low_carb,
-                "icr": t.insulin_to_carb_ratio or None,
+                "insulin_to_carb_ratio": t.insulin_to_carb_ratio or None,
                 "correction_factor": t.correction_factor or None,
                 "avoid_items": t.avoid_items or None,
                 "safe_snacks": t.safe_snacks or None,
@@ -1036,7 +1036,7 @@ async def handle_memory(args: dict) -> str:
         if section == "shopping":
             s = mem.shopping
             return json.dumps({
-                "weekly_budget": f"${s.weekly_budget:.2f}" if s.weekly_budget else None,
+                "weekly_budget": s.weekly_budget,
                 "prefer_store_brand": s.prefer_store_brand,
                 "max_unit_price_oz": s.max_unit_price_oz,
                 "staples": s.staples or None,

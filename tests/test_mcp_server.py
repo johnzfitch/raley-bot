@@ -359,8 +359,9 @@ async def test_handle_memory_section_t1d_includes_all_fields():
     with patch("raley_assistant.mcp_server.load_memory", return_value=mem):
         result = json.loads(await handle_memory({"action": "get", "section": "t1d"}))
 
-    # All T1D fields must be present (not lossy)
+    # All T1D fields present with exact dataclass field names for round-trip safety
     assert result["gi_ceiling"] == 60
+    assert result["carb_target_per_meal"] == 50  # exact field name, not aliased
     assert result["correction_factor"] == "1:40"
     assert result["prefer_low_carb"] is True
     assert result["favorite_proteins"] == ["chicken", "salmon"]
@@ -380,7 +381,8 @@ async def test_handle_memory_section_shopping_includes_all_fields():
     with patch("raley_assistant.mcp_server.load_memory", return_value=mem):
         result = json.loads(await handle_memory({"action": "get", "section": "shopping"}))
 
-    assert result["weekly_budget"] == "$150.00"
+    # Returns raw values (not formatted strings) for round-trip safety with memory set
+    assert result["weekly_budget"] == 150.0
     assert result["max_unit_price_oz"] == 0.25
     assert result["preferred_store_section"] == ["produce", "dairy"]
 
