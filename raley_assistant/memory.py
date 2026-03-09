@@ -122,6 +122,7 @@ def save_memory(mem: ShoppingMemory) -> None:
     data = mem.to_dict()
     fd = os.open(str(MEMORY_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
+        os.fchmod(f.fileno(), 0o600)
         json.dump(data, f, indent=2)
 
 
@@ -173,6 +174,8 @@ def set_field(section: str, key: str, value: Any) -> tuple[bool, str]:
             if isinstance(value, str):
                 # Accept comma-separated string → list
                 value = [v.strip() for v in value.split(",") if v.strip()]
+            elif not isinstance(value, list):
+                return False, f"Expected list or comma-separated string for {section}.{key}"
     except (ValueError, TypeError) as e:
         return False, f"Type error setting {section}.{key}: {e}"
 

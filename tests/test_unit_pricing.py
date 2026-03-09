@@ -49,6 +49,36 @@ def test_extract_none_when_no_unit():
     assert unit is None
 
 
+def test_extract_liter_with_space():
+    qty, unit = extract_quantity_from_name("Sparkling Water 2 l")
+    assert qty == 2.0
+    assert unit == "l"
+
+
+def test_extract_liter_without_space():
+    qty, unit = extract_quantity_from_name("Sparkling Water 2l")
+    assert qty == 2.0
+    assert unit == "l"
+
+
+def test_extract_gram_with_space():
+    qty, unit = extract_quantity_from_name("Frozen Peas 500 g")
+    assert qty == 500.0
+    assert unit == "g"
+
+
+def test_extract_gram_without_space():
+    qty, unit = extract_quantity_from_name("Frozen Peas 500g")
+    assert qty == 500.0
+    assert unit == "g"
+
+
+def test_single_letter_units_do_not_match_words():
+    qty, unit = extract_quantity_from_name("2 large avocados")
+    assert qty is None
+    assert unit is None
+
+
 # ── normalize_to_oz ─────────────────────────────────────────────────
 
 def test_oz_passthrough():

@@ -31,7 +31,7 @@ git clone https://github.com/johnzfitch/raley-bot.git
 cd raley-bot
 
 uv venv && source .venv/bin/activate
-uv pip install -e .
+uv pip install -e ".[login]"
 
 raley-bot login
 ```
@@ -162,7 +162,7 @@ Format:
 
 ## Troubleshooting
 
-**Session expired?** → `raley login`
+**Session expired?** → `raley-bot login`
 
 **Browser login not working?** → Export cookies manually with a browser extension ("Cookie-Editor" or "EditThisCookie"), save as JSON, then `raley login --file cookies.json`
 

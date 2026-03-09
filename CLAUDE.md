@@ -10,12 +10,12 @@ Named after a person who makes grocery day feel less like a chore. Not the chain
 
 ```bash
 uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
+uv pip install -e ".[dev,login]"
 pytest                           # 95 tests, <2s
 pytest -v                        # verbose
 pytest tests/test_reasoning.py   # single module
 pytest -k "brand"                # by keyword
-raley login                      # browser auth
+raley-bot login                  # browser auth
 raley-mcp                        # MCP stdio server
 ```
 
@@ -31,13 +31,16 @@ Audit trail: **[docs/AUDIT.md](docs/AUDIT.md)** -- what was broken, removed, and
 ### Module Map
 
 ```
-mcp_server.py   -- 9 MCP tools, the main interface
+mcp_server.py   -- 12 MCP tools, the main interface
   api.py        -- curl subprocess HTTP, all store endpoints
   db.py         -- SQLite WAL, price history, deal detection
   reasoning.py  -- heuristic scoring (NOT ml), purchase frequency
   cart_builder.py -- grocery list parsing, value-sorted search
   unit_pricing.py -- $/oz $/lb $/ml $/unit normalization
   preferences.py  -- loads ~/.config/raley-assistant/preferences.json
+  t1d.py        -- T1D nutrition scoring, GI database
+  memory.py     -- persistent shopping memory (T1D config, notes)
+  knowledge.py  -- T1D reference book search
   auth.py       -- Helium/Selenium browser login
   cookies.py    -- session persistence, validation
 

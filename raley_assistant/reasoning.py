@@ -248,8 +248,8 @@ def should_buy_this_trip(
     the last purchase date, we can estimate whether the user is likely
     to need more.
 
-    NOTE: Currently unused by the MCP server. Kept for future integration
-    with order history analysis.
+    Called from handle_build_list() in mcp_server.py to flag recently
+    purchased items in the grocery plan response.
 
     Args:
         product_name: Product name for frequency classification
@@ -271,7 +271,9 @@ def should_buy_this_trip(
     except ValueError:
         return True, "Could not parse last purchase date"
 
-    days_since = (datetime.now(timezone.utc) - last_date.replace(tzinfo=timezone.utc)).days
+    if last_date.tzinfo is None:
+        last_date = last_date.replace(tzinfo=timezone.utc)
+    days_since = (datetime.now(timezone.utc) - last_date).days
 
     # Use typical interval or estimate from frequency
     interval = typical_interval_days

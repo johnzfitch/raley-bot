@@ -57,8 +57,10 @@ def extract_quantity_from_name(
         r"(\d+\.?\d*)\s*(gal|gallon|gallons)\b",
         r"(\d+\.?\d*)\s*(ml|milliliter|milliliters)\b",
         r"(\d+\.?\d*)\s*(fl\.?\s?oz|fluid ounce)\b",
-        r"(\d+\.?\d*)\s*(l|liter|liters)\b",
-        r"(\d+\.?\d*)\s*(g|gram|grams)\b",
+        r"(\d+\.?\d*)\s*(liter|liters)\b",
+        r"(\d+\.?\d*)\s*(gram|grams)\b",
+        r"(\d+\.?\d*)\s*(l)\b",
+        r"(\d+\.?\d*)\s*(g)\b",
         r"(\d+\.?\d*)\s*(?:ct|count|pack|ea|each)\b",
     ]
 

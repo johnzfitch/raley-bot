@@ -5,6 +5,7 @@ Named after Raley — someone who makes grocery day feel less like a chore.
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 from datetime import datetime
@@ -165,13 +166,16 @@ def save_result_to_file(filename_prefix: str, data: dict) -> str:
     base_dir = Path.home() / ".local" / "share" / "raley-assistant"
     base_dir.mkdir(parents=True, exist_ok=True)
 
+    # Sanitize prefix to prevent path traversal
+    safe_prefix = re.sub(r"[^\w-]", "", filename_prefix)[:30]
     from datetime import timezone
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    filepath = base_dir / f"{filename_prefix}-{timestamp}.json"
+    filepath = base_dir / f"{safe_prefix}-{timestamp}.json"
 
     # Write with owner-only permissions
     fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
+        os.fchmod(f.fileno(), 0o600)
         json.dump(data, f, indent=2)
 
     return str(filepath)
@@ -353,8 +357,10 @@ async def handle_search(args: dict) -> str:
     # Sync to local price DB (non-destructive)
     try:
         conn = get_connection()
-        sync_products_from_search(conn, products)
-        conn.close()
+        try:
+            sync_products_from_search(conn, products)
+        finally:
+            conn.close()
     except Exception:
         pass
 
@@ -538,8 +544,10 @@ async def handle_offers(args: dict) -> str:
     if action == "sync":
         offers = get_offers(client, rows=500)
         conn = get_connection()
-        count = sync_coupons_from_api(conn, offers)
-        conn.close()
+        try:
+            count = sync_coupons_from_api(conn, offers)
+        finally:
+            conn.close()
         result = {"synced": count}
         if len(offers) >= 500:
             result["note"] = "Hit 500 limit, may have more"
@@ -552,7 +560,7 @@ async def handle_offers(args: dict) -> str:
     results = [
         {
             "id": o.id,
-            "headline": o.headline[:50],
+            "headline": _truncate(o.headline),
             "discount": f"${o.discount_amount:.2f}" if o.discount_amount else "See details",
             "expires": o.end_date[:10] if o.end_date else "",
         }
@@ -612,8 +620,10 @@ async def handle_build_list(args: dict) -> str:
         buy_note = ""
         try:
             conn = get_connection()
-            last_date = get_last_purchase_date(conn, decision.sku)
-            conn.close()
+            try:
+                last_date = get_last_purchase_date(conn, decision.sku)
+            finally:
+                conn.close()
             if last_date:
                 should_buy, buy_note = should_buy_this_trip(
                     decision.product_name, last_purchased=last_date
@@ -711,53 +721,51 @@ async def handle_build_list(args: dict) -> str:
 async def handle_price_check(args: dict) -> str:
     """Check price history or search local DB."""
     conn = get_connection()
+    try:
+        if args.get("q"):
+            results = search_products_local(conn, args["q"], 10)
+            if not results:
+                return json.dumps({"error": "No local results"})
+            return json.dumps(
+                {
+                    "products": [
+                        {
+                            "sku": r["sku"],
+                            "name": _truncate(r["name"]),
+                            "price": f"${r['price_cents']/100:.2f}"
+                            if r.get("price_cents")
+                            else None,
+                        }
+                        for r in results
+                    ],
+                    "count": len(results),
+                }
+            )
 
-    if args.get("q"):
-        results = search_products_local(conn, args["q"], 10)
+        if args.get("sku"):
+            record = get_product_with_history(conn, args["sku"])
+            if not record:
+                return json.dumps({"error": "No history", "sku": args["sku"]})
+
+            is_deal, reason = is_good_deal(conn, args["sku"], record.current_price)
+
+            return json.dumps(
+                {
+                    "sku": record.sku,
+                    "name": _truncate(record.name),
+                    "current": f"${record.current_price/100:.2f}",
+                    "avg": f"${record.avg_price/100:.2f}",
+                    "min": f"${record.min_price/100:.2f}",
+                    "max": f"${record.max_price/100:.2f}",
+                    "deal": is_deal,
+                    "analysis": reason,
+                }
+            )
+
+        stats = get_price_stats(conn)
+        return json.dumps(stats)
+    finally:
         conn.close()
-        if not results:
-            return json.dumps({"error": "No local results"})
-        return json.dumps(
-            {
-                "products": [
-                    {
-                        "sku": r["sku"],
-                        "name": _truncate(r["name"]),
-                        "price": f"${r['price_cents']/100:.2f}"
-                        if r.get("price_cents")
-                        else None,
-                    }
-                    for r in results
-                ],
-                "count": len(results),
-            }
-        )
-
-    if args.get("sku"):
-        record = get_product_with_history(conn, args["sku"])
-        if not record:
-            conn.close()
-            return json.dumps({"error": "No history", "sku": args["sku"]})
-
-        is_deal, reason = is_good_deal(conn, args["sku"], record.current_price)
-        conn.close()
-
-        return json.dumps(
-            {
-                "sku": record.sku,
-                "name": _truncate(record.name),
-                "current": f"${record.current_price/100:.2f}",
-                "avg": f"${record.avg_price/100:.2f}",
-                "min": f"${record.min_price/100:.2f}",
-                "max": f"${record.max_price/100:.2f}",
-                "deal": is_deal,
-                "analysis": reason,
-            }
-        )
-
-    stats = get_price_stats(conn)
-    conn.close()
-    return json.dumps(stats)
 
 
 async def handle_orders(args: dict) -> str:
@@ -773,8 +781,10 @@ async def handle_orders(args: dict) -> str:
     # Sync order items to local DB for purchase frequency tracking
     try:
         conn = get_connection()
-        sync_order_items(conn, all_orders)
-        conn.close()
+        try:
+            sync_order_items(conn, all_orders)
+        finally:
+            conn.close()
     except Exception:
         pass
 
@@ -839,10 +849,12 @@ async def handle_deals(args: dict) -> str:
 
     # Load clipped coupons from local DB first (sync separately via offers sync)
     conn = get_connection()
-    clipped_rows = conn.execute(
-        "SELECT offer_id, headline, discount_amount FROM coupons WHERE is_clipped = 1 LIMIT 200"
-    ).fetchall()
-    conn.close()
+    try:
+        clipped_rows = conn.execute(
+            "SELECT offer_id, headline, discount_amount FROM coupons WHERE is_clipped = 1 LIMIT 200"
+        ).fetchall()
+    finally:
+        conn.close()
 
     # Fetch currently on-sale products (up to 30)
     try:
@@ -872,54 +884,54 @@ async def handle_deals(args: dict) -> str:
     gi_ceiling = mem.t1d.gi_ceiling
     results = []
     conn = get_connection()
+    try:
+        for p in sale_products:
+            if not p.sale_price_cents:
+                continue
 
-    for p in sale_products:
-        if not p.sale_price_cents:
-            continue
+            discount_cents = p.price_cents - p.sale_price_cents
+            discount_pct = (discount_cents / p.price_cents * 100) if p.price_cents else 0
 
-        discount_cents = p.price_cents - p.sale_price_cents
-        discount_pct = (discount_cents / p.price_cents * 100) if p.price_cents else 0
+            entry: dict[str, Any] = {
+                "sku": p.sku,
+                "name": _truncate(p.name),
+                "sale": f"${p.sale_price_cents / 100:.2f}",
+                "was": f"${p.price_cents / 100:.2f}",
+                "save": f"${discount_cents / 100:.2f} ({discount_pct:.0f}%)",
+            }
 
-        entry: dict[str, Any] = {
-            "sku": p.sku,
-            "name": _truncate(p.name, 50),
-            "sale": f"${p.sale_price_cents / 100:.2f}",
-            "was": f"${p.price_cents / 100:.2f}",
-            "save": f"${discount_cents / 100:.2f} ({discount_pct:.0f}%)",
-        }
+            # Unit pricing
+            if p.price_per_oz:
+                entry["per_oz"] = f"${p.price_per_oz:.3f}"
 
-        # Unit pricing
-        if p.price_per_oz:
-            entry["per_oz"] = f"${p.price_per_oz:.3f}"
+            # Price history context
+            try:
+                is_deal, reason = is_good_deal(conn, p.sku, p.sale_price_cents)
+                if is_deal:
+                    entry["history"] = reason
+            except Exception:
+                pass
 
-        # Price history context
-        try:
-            is_deal, reason = is_good_deal(conn, p.sku, p.sale_price_cents)
-            if is_deal:
-                entry["history"] = reason
-        except Exception:
-            pass
+            # Clipped coupon match
+            if p.sku in coupon_matches:
+                entry["coupons"] = coupon_matches[p.sku]
 
-        # Clipped coupon match
-        if p.sku in coupon_matches:
-            entry["coupons"] = coupon_matches[p.sku]
+            # T1D annotation
+            t1d = score_t1d(p.name, gi_ceiling)
+            if t1d.gi is not None:
+                entry["gi"] = t1d.gi
+                entry["gi_cat"] = t1d.category
+            if t1d.flag:
+                entry["gi_flag"] = t1d.flag
+            if t1d.swap_suggestion and t1d.flag == "HIGH_GI":
+                entry["gi_swap"] = t1d.swap_suggestion
 
-        # T1D annotation
-        t1d = score_t1d(p.name, gi_ceiling)
-        if t1d.gi is not None:
-            entry["gi"] = t1d.gi
-            entry["gi_cat"] = t1d.category
-        if t1d.flag:
-            entry["gi_flag"] = t1d.flag
-        if t1d.swap_suggestion and t1d.flag == "HIGH_GI":
-            entry["gi_swap"] = t1d.swap_suggestion
+            if gi_filter and t1d.category != "low":
+                continue
 
-        if gi_filter and t1d.category not in ("low", "unknown"):
-            continue
-
-        results.append(entry)
-
-    conn.close()
+            results.append(entry)
+    finally:
+        conn.close()
 
     # Sort: coupon+sale first, then by discount %
     results.sort(
@@ -949,7 +961,7 @@ async def handle_knowledge(args: dict) -> str:
         limit=min(args.get("limit", 5), 10),
     )
     if not results:
-        return json.dumps({"results": [], "tip": "Try broader keywords or check installed books with knowledge{}"})
+        return json.dumps({"results": [], "tip": "Try broader keywords or check installed books with knowledge q=''"})
     return json.dumps({"results": results, "count": len(results)})
 
 
@@ -1019,7 +1031,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     except Exception as e:
         raw = str(e) if str(e) else "Unknown error"
         # Strip paths and potential credential fragments from error messages
-        import re
         sanitized = re.sub(r"(/[\w./-]+)", "<path>", raw)
         sanitized = re.sub(r"(FLDR\.\w+=)[^\s;]+", r"\1<redacted>", sanitized)
         msg = sanitized[:MAX_ERROR_LENGTH]

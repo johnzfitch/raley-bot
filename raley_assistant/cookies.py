@@ -10,8 +10,11 @@ from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
 
+from .domains import is_raleys_domain
+
 COOKIES_DIR = Path.home() / ".config" / "raley-assistant"
 COOKIES_FILE = COOKIES_DIR / "cookies.json"
+
 
 # Required cookies for API access
 REQUIRED_COOKIES = [
@@ -40,7 +43,10 @@ def load_cookies_from_devtools(json_path: Path | str) -> list[dict[str, Any]]:
     else:
         raise ValueError("Unrecognized cookie format. Expected array or {cookies: [...]}.")
 
-    return [c for c in cookies if c.get("domain", "").endswith("raleys.com")]
+    return [
+        c for c in cookies
+        if is_raleys_domain(c.get("domain", ""))
+    ]
 
 
 def validate_cookies(cookies: list[dict[str, Any]]) -> tuple[bool, list[str]]:
@@ -101,6 +107,7 @@ def save_cookies(cookies: list[dict[str, Any]]) -> None:
     import os
     fd = os.open(str(COOKIES_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
+        os.fchmod(f.fileno(), 0o600)
         json.dump(cookies, f, indent=2)
 
 
