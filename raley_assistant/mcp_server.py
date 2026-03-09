@@ -197,15 +197,18 @@ def _check_blacklist(sku: str, product_name: str) -> str | None:
     name_lower = product_name.lower()
     sku_lower = sku.lower()
 
-    # Check blacklist notes
+    # Check blacklist notes: does any meaningful keyword from the note appear in the product name?
     if mem.notes:
         for key, value in mem.notes.items():
             if "blacklist" not in key.lower():
                 continue
             value_lower = value.lower()
-            if sku_lower in value_lower or any(
-                word in value_lower for word in name_lower.split() if len(word) > 3
-            ):
+            # Direct SKU match in note
+            if sku_lower in value_lower:
+                return f"Matches blacklist note '{key}': {value[:80]}"
+            # Note keywords found in product name (5+ chars to avoid common words)
+            note_keywords = [w for w in value_lower.split() if len(w) >= 5]
+            if any(kw in name_lower for kw in note_keywords):
                 return f"Matches blacklist note '{key}': {value[:80]}"
 
     # Check avoid_brands in shopping config
@@ -653,36 +656,40 @@ async def handle_add(args: dict) -> str:
 
 
 async def handle_remove(args: dict) -> str:
-    """Remove from cart. Returns reason on failure + cart state after."""
+    """Remove from cart. Returns reason on failure + cart state after.
+
+    remove_from_cart() already fetches the cart internally to find lineItemId,
+    so we skip a redundant pre-check and only diagnose failure after the fact.
+    """
     client = get_api_client()
     sku = args["sku"]
 
-    # Pre-check: is the SKU actually in the cart?
-    cart = get_cart(client)
-    if not cart:
-        return json.dumps({"ok": False, "sku": sku, "reason": "cart_fetch_failed"})
+    success = remove_from_cart(client, sku)
 
-    found = any(
-        item.get("variant", {}).get("sku") == sku
-        for item in cart.get("lineItems", [])
-    )
-    if not found:
-        result: dict[str, Any] = {"ok": False, "sku": sku, "reason": "not_in_cart"}
-        # Still return current cart state for context
+    if not success:
+        # Diagnose: empty cart, SKU missing, or API error
+        cart = get_cart(client)
+        if not cart:
+            return json.dumps({"ok": False, "sku": sku, "reason": "cart_fetch_failed"})
+
         line_items = cart.get("lineItems", [])
+        found = any(item.get("variant", {}).get("sku") == sku for item in line_items)
+        result: dict[str, Any] = {
+            "ok": False,
+            "sku": sku,
+            "reason": "api_error" if found else "not_in_cart",
+        }
         total = cart.get("totalPrice", {}).get("centAmount", 0) / 100
         result["cart_total"] = f"${total:.2f}"
         result["cart_items"] = len(line_items)
         result["cart_units"] = sum(i.get("quantity", 1) for i in line_items)
-        result["cart_skus"] = [i.get("variant", {}).get("sku", "") for i in line_items[:10]]
+        if not found:
+            result["cart_skus"] = [i.get("variant", {}).get("sku", "") for i in line_items[:10]]
         return json.dumps(result)
 
-    success = remove_from_cart(client, sku)
-    result = {"ok": success, "sku": sku}
-    if not success:
-        result["reason"] = "api_error"
+    result = {"ok": True, "sku": sku}
 
-    # Return cart state after mutation
+    # Return cart state after successful mutation
     try:
         result.update(_cart_snapshot(client))
     except Exception:
@@ -1442,6 +1449,12 @@ async def handle_search_batch(args: dict) -> str:
     gi_ceiling = mem.t1d.gi_ceiling
     results = []
 
+    # Fetch store_id once for the whole batch (consistent with handle_search)
+    try:
+        store_id = get_store_id(client)
+    except Exception:
+        store_id = ""
+
     for i, query in enumerate(queries):
         query = query.strip()
         if not query:
@@ -1458,11 +1471,11 @@ async def handle_search_batch(args: dict) -> str:
             results.append({"query": query, "found": False})
             continue
 
-        # Sync to DB
+        # Sync to DB with store tracking (consistent with handle_search)
         try:
             conn = get_connection()
             try:
-                sync_products_from_search(conn, products)
+                sync_products_from_search(conn, products, store_id=store_id)
             finally:
                 conn.close()
         except Exception:
@@ -1511,9 +1524,9 @@ async def handle_search_batch(args: dict) -> str:
 
         results.append(entry)
 
-        # Rate limiting between searches
+        # Rate limiting between searches: 200ms normally, 500ms every 10 (per CLAUDE.md)
         if i < len(queries) - 1:
-            time.sleep(0.2)
+            time.sleep(0.5 if (i + 1) % 10 == 0 else 0.2)
 
     total_cents = sum(r.get("cents", 0) for r in results if r.get("found"))
     return json.dumps({
@@ -1534,6 +1547,8 @@ async def handle_cart_diff(args: dict) -> str:
 
     # Parse expected: "sku1,sku2" or "sku1:2,sku2:1"
     expected_str = args.get("expected_skus", "")
+    if not expected_str:
+        return json.dumps({"error": "expected_skus required (comma-separated SKUs or sku:qty pairs)"})
     expected: dict[str, int] = {}
     for part in expected_str.split(","):
         part = part.strip()

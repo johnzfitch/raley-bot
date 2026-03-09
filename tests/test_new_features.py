@@ -127,12 +127,16 @@ def test_add_returns_cart_state(mock_client, mock_add, mock_get_sku, mock_cart):
 # ── F. Remove returns failure reason ──────────────────────────────
 
 
+@patch("raley_assistant.mcp_server.remove_from_cart")
 @patch("raley_assistant.mcp_server.get_cart")
 @patch("raley_assistant.mcp_server.get_api_client")
-def test_remove_not_in_cart_returns_reason(mock_client, mock_cart):
+def test_remove_not_in_cart_returns_reason(mock_client, mock_cart, mock_remove):
+    """SKU not in cart: remove_from_cart returns False, then we diagnose with get_cart."""
     from raley_assistant.mcp_server import handle_remove
 
     mock_client.return_value = MagicMock()
+    mock_remove.return_value = False  # remove_from_cart already fetches cart internally
+    # get_cart is called once by the failure-diagnosis path
     mock_cart.return_value = {
         "lineItems": [
             {"id": "line-1", "quantity": 1, "variant": {"sku": "OTHER_SKU"}},
@@ -149,13 +153,16 @@ def test_remove_not_in_cart_returns_reason(mock_client, mock_cart):
     assert "OTHER_SKU" in result["cart_skus"]
 
 
+@patch("raley_assistant.mcp_server.remove_from_cart")
 @patch("raley_assistant.mcp_server.get_cart")
 @patch("raley_assistant.mcp_server.get_api_client")
-def test_remove_empty_cart_returns_reason(mock_client, mock_cart):
+def test_remove_empty_cart_returns_reason(mock_client, mock_cart, mock_remove):
+    """Cart fetch fails during failure diagnosis."""
     from raley_assistant.mcp_server import handle_remove
 
     mock_client.return_value = MagicMock()
-    mock_cart.return_value = {}
+    mock_remove.return_value = False
+    mock_cart.return_value = {}  # empty dict = failed cart fetch
 
     result = json.loads(_run(handle_remove({"sku": "SKU1"})))
 
@@ -167,21 +174,16 @@ def test_remove_empty_cart_returns_reason(mock_client, mock_cart):
 @patch("raley_assistant.mcp_server.get_cart")
 @patch("raley_assistant.mcp_server.get_api_client")
 def test_remove_success_returns_cart_state(mock_client, mock_cart, mock_remove):
+    """Success path: remove_from_cart returns True, then _cart_snapshot is called."""
     from raley_assistant.mcp_server import handle_remove
 
     mock_client.return_value = MagicMock()
-    # First call: pre-check (SKU found). Second call: post-mutation snapshot.
-    mock_cart.side_effect = [
-        {
-            "lineItems": [{"id": "line-1", "quantity": 1, "variant": {"sku": "SKU1"}}],
-            "totalPrice": {"centAmount": 499},
-        },
-        {
-            "lineItems": [],
-            "totalPrice": {"centAmount": 0},
-        },
-    ]
     mock_remove.return_value = True
+    # get_cart called once by _cart_snapshot after successful remove
+    mock_cart.return_value = {
+        "lineItems": [],
+        "totalPrice": {"centAmount": 0},
+    }
 
     result = json.loads(_run(handle_remove({"sku": "SKU1"})))
 
@@ -194,14 +196,16 @@ def test_remove_success_returns_cart_state(mock_client, mock_cart, mock_remove):
 @patch("raley_assistant.mcp_server.get_cart")
 @patch("raley_assistant.mcp_server.get_api_client")
 def test_remove_api_error_returns_reason(mock_client, mock_cart, mock_remove):
+    """Remove fails despite SKU being in cart (API error)."""
     from raley_assistant.mcp_server import handle_remove
 
     mock_client.return_value = MagicMock()
+    mock_remove.return_value = False
+    # Diagnosis: SKU IS in cart, so reason is api_error not not_in_cart
     mock_cart.return_value = {
         "lineItems": [{"id": "line-1", "quantity": 1, "variant": {"sku": "SKU1"}}],
         "totalPrice": {"centAmount": 499},
     }
-    mock_remove.return_value = False
 
     result = json.loads(_run(handle_remove({"sku": "SKU1"})))
 

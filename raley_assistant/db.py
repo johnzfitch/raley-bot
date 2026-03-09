@@ -101,6 +101,15 @@ class ProductHistory:
     last_seen: str
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply incremental schema migrations for existing databases."""
+    # Add store_id to products table if it doesn't exist (migration from pre-0.4)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(products)").fetchall()}
+    if "store_id" not in cols:
+        conn.execute("ALTER TABLE products ADD COLUMN store_id TEXT DEFAULT ''")
+        conn.commit()
+
+
 def get_connection() -> sqlite3.Connection:
     """Get database connection, creating schema if needed."""
     DB_DIR.mkdir(parents=True, exist_ok=True)
@@ -109,6 +118,7 @@ def get_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
 
 
