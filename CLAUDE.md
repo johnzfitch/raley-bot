@@ -10,7 +10,7 @@ Named after a person who makes grocery day feel less like a chore. Not the chain
 
 ```bash
 uv venv && source .venv/bin/activate
-uv pip install -e ".[dev]"
+uv pip install -e ".[dev,login]"
 pytest                           # 95 tests, <2s
 pytest -v                        # verbose
 pytest tests/test_reasoning.py   # single module

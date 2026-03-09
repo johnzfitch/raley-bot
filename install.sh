@@ -38,7 +38,7 @@ fi
 info "Setting up environment..."
 cd "$INSTALL_DIR"
 uv venv -q
-uv pip install -e . --quiet
+uv pip install -e ".[login]" --quiet
 
 # Ensure bin directory exists
 mkdir -p "$BIN_DIR"
@@ -97,6 +97,7 @@ with open('$config_file', 'w') as f:
 " 2>/dev/null || {
       warn "Could not update $config_file automatically."
       warn "Add raley-bot MCP config manually."
+      return 1
     }
   else
     # Create fresh config
@@ -112,7 +113,9 @@ if [ "$(uname)" = "Darwin" ]; then
 else
   CLAUDE_DESKTOP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/Claude/claude_desktop_config.json"
 fi
-configure_mcp "$CLAUDE_DESKTOP_CONFIG"
+if ! configure_mcp "$CLAUDE_DESKTOP_CONFIG"; then
+  warn "Claude Desktop MCP auto-configuration did not complete."
+fi
 
 info ""
 info "Installed successfully!"

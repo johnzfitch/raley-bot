@@ -31,7 +31,7 @@ git clone https://github.com/johnzfitch/raley-bot.git
 cd raley-bot
 
 uv venv && source .venv/bin/activate
-uv pip install -e .
+uv pip install -e ".[login]"
 
 raley-bot login
 ```

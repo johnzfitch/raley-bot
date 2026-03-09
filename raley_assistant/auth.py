@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from datetime import datetime, timezone
 
+from .domains import is_raleys_domain
+
 try:
     import helium
 
@@ -13,12 +15,6 @@ except ImportError:
     HELIUM_AVAILABLE = False
 
 RALEYS_LOGIN_URL = "https://www.raleys.com/account/signin"
-
-
-def _is_raleys_domain(domain: str) -> bool:
-    """Check if domain is exactly raleys.com or a subdomain of it."""
-    domain = domain.lstrip(".").lower()
-    return domain == "raleys.com" or domain.endswith(".raleys.com")
 
 
 REQUIRED_COOKIES = ["FLDR.Auth", "FLDR.Session", "FLDR.User", "FLDR.CSRF", "FLDR.RememberMe"]
@@ -31,7 +27,7 @@ def interactive_login(timeout: int = 300) -> tuple[bool, str]:
     Returns (success, message).
     """
     if not HELIUM_AVAILABLE:
-        return False, "Helium not installed. Run: uv pip install helium"
+        return False, "Helium not installed. Reinstall with: uv pip install -e '.[login]'"
 
     try:
         helium.start_chrome(headless=False)
@@ -52,7 +48,7 @@ def interactive_login(timeout: int = 300) -> tuple[bool, str]:
         helium.kill_browser()
         return False, "Login timed out. Please try again."
 
-    except Exception as e:
+    except Exception:
         try:
             helium.kill_browser()
         except Exception:
@@ -76,14 +72,14 @@ def save_cookies_from_selenium(cookies: list[dict]) -> None:
             "expires": c.get("expiry"),
         }
         for c in cookies
-        if _is_raleys_domain(c.get("domain", ""))
+        if is_raleys_domain(c.get("domain", ""))
     ]
 
     # Write with restrictive permissions
     import os
     fd = os.open(str(COOKIES_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w") as f:
+        os.fchmod(f.fileno(), 0o600)
         json.dump({"cookies": formatted}, f, indent=2)
 
 
@@ -164,7 +160,7 @@ def check_auth_status() -> dict:
 
             return result
 
-    except Exception as e:
+    except Exception:
         return {
             "authenticated": False,
             "cookies_found": 0,

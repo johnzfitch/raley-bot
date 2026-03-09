@@ -149,6 +149,6 @@ def save_preferences(prefs: Preferences, path: Optional[Path] = None) -> None:
 
     import os
     fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w") as f:
+        os.fchmod(f.fileno(), 0o600)
         json.dump(data, f, indent=2)
