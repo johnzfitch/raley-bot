@@ -55,8 +55,9 @@ coupon management, and Type 1 diabetes nutrition guidance.
 | cart      | View current cart. Use `summary_only=true` for a quick total |
 | offers    | Coupon management: `list` unclipped, `clip_all`, or `sync` to local DB |
 | plan      | Parse a freeform grocery list, find matches + totals. Does not add to cart |
-| price     | Price history for a SKU, or text search of local product DB |
-| orders    | Past order history. Syncs SKUs to local DB for frequency tracking |
+| price     | Price history for a SKU, search local DB, or `clear=true` to reset cache |
+| orders    | Past order history with totals |
+| favorites | Purchase history: `products` (recent), `brands` (by product count), `sync` (refresh) |
 | deals     | Best-value items this week: clipped coupons + sale prices + price history |
 | memory    | Read/write shopping memory. Use `section=t1d/shopping/notes` to filter |
 | knowledge | Search T1D books. Use `book`+`heading` to fetch full section after searching |
@@ -82,6 +83,16 @@ and preferences. Use `memory note` to record discoveries (liked recipes,
 items to avoid, brands that were good value). Use `memory set` to update
 structured fields like `gi_ceiling` or `carb_target_per_meal`.
 
+**Store/location change**: If items show "No Longer Available" or SKUs don't
+match what the user sees, run `price clear=true` to reset the local cache.
+The cache stores SKUs by store — changing delivery address requires a refresh.
+
+**Weight/size data**: The API often lacks accurate pack weights for meat and
+produce. When comparing items by unit price ($/lb):
+- If weight is missing, flag it: "Weight not in API — verify pack size"
+- Use $/lb from the price field as truth for "sold by weight" items
+- Ask user to confirm pack size before making price comparisons
+
 ## T1D Nutrition
 
 When GI data is available in search or plan results:
@@ -105,6 +116,7 @@ from .api import (
     clip_all_offers,
     get_orders,
     get_products_by_sku,
+    get_previously_purchased,
     CartItem,
 )
 from .db import (
@@ -117,6 +129,10 @@ from .db import (
     is_good_deal,
     search_products_local,
     get_price_stats,
+    sync_previously_purchased,
+    get_favorite_products,
+    get_favorite_brands,
+    get_purchase_stats,
 )
 from .reasoning import (
     evaluate_options,
@@ -290,12 +306,16 @@ TOOLS = [
     ),
     Tool(
         name="price",
-        description="Price history by SKU, or search local DB.",
+        description="Price history by SKU, search local DB, or clear cache. Use clear=true when user changes store/delivery location.",
         inputSchema={
             "type": "object",
             "properties": {
                 "sku": {"type": "string"},
                 "q": {"type": "string"},
+                "clear": {
+                    "type": "string",
+                    "description": "Clear cache: 'true' for products only, 'all' for everything",
+                },
             },
         },
     ),
@@ -309,6 +329,21 @@ TOOLS = [
                 "limit": {"type": "integer"},
                 "summary_only": {"type": "boolean"},
                 "save_to_file": {"type": "boolean"},
+            },
+        },
+    ),
+    Tool(
+        name="favorites",
+        description="Purchase history from 'previously purchased' API.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "enum": ["products", "brands", "stats", "sync"],
+                    "description": "products=by recency, brands=by product count, stats=summary, sync=refresh from API",
+                },
+                "limit": {"type": "integer"},
             },
         },
     ),
@@ -746,6 +781,22 @@ async def handle_price_check(args: dict) -> str:
     """Check price history or search local DB."""
     conn = get_connection()
     try:
+        # Clear cache when store/location changes
+        if args.get("clear"):
+            tables = ["products", "price_history"]
+            if args.get("clear") == "all":
+                tables.extend(["purchase_history", "coupons", "order_items"])
+            counts = {}
+            for table in tables:
+                count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                conn.execute(f"DELETE FROM {table}")
+                counts[table] = count
+            conn.commit()
+            return json.dumps({
+                "cleared": counts,
+                "message": "Cache cleared. Fresh searches will rebuild from API.",
+            })
+
         if args.get("q"):
             results = search_products_local(conn, args["q"], 10)
             if not results:
@@ -771,13 +822,13 @@ async def handle_price_check(args: dict) -> str:
             if not record:
                 return json.dumps({"error": "No history", "sku": args["sku"]})
 
-            is_deal, reason = is_good_deal(conn, args["sku"], record.current_price)
+            is_deal, reason = is_good_deal(conn, args["sku"], record.current_price_cents)
 
             return json.dumps(
                 {
                     "sku": record.sku,
                     "name": _truncate(record.name),
-                    "current": f"${record.current_price/100:.2f}",
+                    "current": f"${record.current_price_cents/100:.2f}",
                     "avg": f"${record.avg_price/100:.2f}",
                     "min": f"${record.min_price/100:.2f}",
                     "max": f"${record.max_price/100:.2f}",
@@ -802,31 +853,27 @@ async def handle_orders(args: dict) -> str:
 
     all_orders = get_orders(client, days_back=days_back, limit=30)
 
-    # Sync order items to local DB for purchase frequency tracking
-    try:
-        conn = get_connection()
-        try:
-            sync_order_items(conn, all_orders)
-        finally:
-            conn.close()
-    except Exception:
-        pass
+    # Note: Orders API doesn't return lineItems, so we can't sync individual products here.
+    # Use `favorites sync` instead, which pulls from the "previously purchased" search filter.
 
     results = []
     total_spent = 0.0
     for o in all_orders:
+        # totalPrice is already in dollars (e.g., 87.33), not cents
         total_price = o.get("totalPrice", 0)
         if isinstance(total_price, dict):
-            total_price = total_price.get("centAmount", 0)
+            # Handle centAmount format if API ever changes
+            total_price = total_price.get("centAmount", 0) / 100
 
-        total_spent += total_price / 100
+        total_spent += total_price
 
         results.append(
             {
                 "id": str(o.get("orderId", ""))[-8:],
                 "date": str(o.get("createdDate", ""))[:10],
                 "status": o.get("orderStatus", {}).get("value", ""),
-                "total": f"${total_price/100:.2f}",
+                "total": f"${total_price:.2f}",
+                "product_total": f"${o.get('productAmount', 0):.2f}",
             }
         )
 
@@ -863,6 +910,62 @@ async def handle_auth(args: dict) -> str:
     """Check authentication status."""
     status = check_auth_status()
     return json.dumps(status)
+
+
+async def handle_favorites(args: dict) -> str:
+    """Get purchase history analysis: top products, brands, patterns."""
+    query_type = args.get("type", "products")
+    limit = min(args.get("limit", 20), 50)
+
+    conn = get_connection()
+    try:
+        if query_type == "sync":
+            # Refresh from API - paginate until exhausted
+            client = get_api_client()
+            all_products = []
+            offset = 0
+            page_size = 30
+            max_items = 2000  # Safety cap
+            last_page_skus: set[str] = set()
+
+            while len(all_products) < max_items:
+                page = get_previously_purchased(client, offset=offset, limit=page_size)
+                if not page:
+                    break
+
+                # Detect stuck pagination (API ignoring offset)
+                current_skus = {p.sku for p in page}
+                if current_skus == last_page_skus:
+                    break  # Same page returned twice
+                last_page_skus = current_skus
+
+                all_products.extend(page)
+                if len(page) < page_size:
+                    break  # Last page
+                offset += page_size
+
+            synced = sync_previously_purchased(conn, all_products)
+            # Also sync to products table for price/brand data
+            sync_products_from_search(conn, all_products)
+            return json.dumps({
+                "synced": synced,
+                "message": f"Synced {synced} previously purchased products",
+            })
+
+        elif query_type == "brands":
+            brands = get_favorite_brands(conn, limit=limit)
+            return json.dumps({"brands": brands, "count": len(brands)})
+
+        elif query_type == "stats":
+            stats = get_purchase_stats(conn)
+            return json.dumps(stats)
+
+        else:  # products (default)
+            products = get_favorite_products(conn, limit=limit)
+            return json.dumps({"products": products, "count": len(products)})
+
+    finally:
+        conn.close()
 
 
 async def handle_deals(args: dict) -> str:
@@ -1165,6 +1268,7 @@ TOOL_HANDLERS = {
     "plan": handle_build_list,
     "price": handle_price_check,
     "orders": handle_orders,
+    "favorites": handle_favorites,
     "auth": handle_auth,
     "deals": handle_deals,
     "memory": handle_memory,

@@ -53,6 +53,10 @@ cli.py          -- Click + Rich, standalone from MCP
 
 **Plan** (grocery list): freeform text -> `cart_builder.parse_grocery_list()` -> per-item search + scoring + `should_buy_this_trip()` check -> JSON with matches, totals, `recently_bought` flags -> user confirms -> `add_plan` (bulk) or `add` per item
 
+**Favorites** (purchase history): `favorites sync` -> `api.get_previously_purchased()` -> `db.sync_previously_purchased()` stores to `purchase_history` table with `first_seen`/`last_seen` dates -> `get_favorite_products()` orders by recency, `get_favorite_brands()` orders by product count
+
+Note: The orders API only returns summaries, not line items. Purchase history comes from the "previously purchased" search filter. Products are ordered by when they were last seen (most recent first), not by purchase frequency since actual purchase dates aren't available.
+
 ### Why Curl
 
 The store runs F5 BIG-IP TLS fingerprinting that blocks every Python HTTP library. `subprocess.run(["curl", ...])` with list args passes because curl's TLS handshake matches browsers. This is load-bearing. Do not replace it with requests/httpx/aiohttp.

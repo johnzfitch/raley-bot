@@ -71,6 +71,16 @@ CREATE TABLE IF NOT EXISTS order_items (
 
 CREATE INDEX IF NOT EXISTS idx_order_items_sku ON order_items(sku);
 CREATE INDEX IF NOT EXISTS idx_order_items_purchased ON order_items(purchased_at);
+
+CREATE TABLE IF NOT EXISTS purchase_history (
+    sku TEXT PRIMARY KEY,
+    product_name TEXT DEFAULT '',
+    brand TEXT DEFAULT '',
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_purchase_history_last_seen ON purchase_history(last_seen);
 """
 
 
@@ -81,7 +91,7 @@ class ProductHistory:
     sku: str
     name: str
     brand: str
-    current_price: int  # cents
+    current_price_cents: int
     avg_price: float  # cents
     min_price: int  # cents
     max_price: int  # cents
@@ -251,13 +261,32 @@ def sync_order_items(conn: sqlite3.Connection, orders: list[dict]) -> int:
 def get_last_purchase_date(conn: sqlite3.Connection, sku: str) -> str | None:
     """Get the most recent purchase date for a SKU.
 
-    Returns ISO date string or None if never purchased.
+    Checks both order_items (from order history) and purchase_history
+    (from favorites sync). Returns the most recent date found.
     """
-    row = conn.execute(
+    # Check order_items first
+    order_row = conn.execute(
         "SELECT purchased_at FROM order_items WHERE sku = ? ORDER BY purchased_at DESC LIMIT 1",
         (sku,),
     ).fetchone()
-    return row["purchased_at"] if row else None
+
+    # Check purchase_history (from favorites sync)
+    purchase_row = conn.execute(
+        "SELECT last_seen FROM purchase_history WHERE sku = ?",
+        (sku,),
+    ).fetchone()
+
+    dates = []
+    if order_row:
+        dates.append(order_row["purchased_at"])
+    if purchase_row:
+        dates.append(purchase_row["last_seen"])
+
+    if not dates:
+        return None
+
+    # Return most recent date
+    return max(dates)
 
 
 def get_product_with_history(
@@ -290,7 +319,7 @@ def get_product_with_history(
         sku=sku,
         name=product["name"],
         brand=product["brand"] or "",
-        current_price=effective_price,
+        current_price_cents=effective_price,
         avg_price=stats["avg_price"] or effective_price,
         min_price=stats["min_price"] or effective_price,
         max_price=stats["max_price"] or effective_price,
@@ -429,3 +458,124 @@ def get_price_trend(conn: sqlite3.Connection, sku: str, days: int = 30) -> list[
     ).fetchall()
 
     return [{"date": r["observed_at"][:10], "price_cents": r["price"]} for r in rows]
+
+
+def sync_previously_purchased(conn: sqlite3.Connection, products: list) -> int:
+    """Sync products from the 'previously purchased' API into purchase_history.
+
+    Tracks first_seen (when product first appeared) and last_seen (most recent
+    sync where it appeared). Products that stop appearing in the API naturally
+    have older last_seen dates.
+
+    Returns number of products synced.
+    """
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    count = 0
+
+    for p in products:
+        brand = getattr(p, "brand", "") or ""
+        conn.execute(
+            """
+            INSERT INTO purchase_history (sku, product_name, brand, first_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(sku) DO UPDATE SET
+                product_name = excluded.product_name,
+                brand = CASE WHEN excluded.brand != '' THEN excluded.brand ELSE purchase_history.brand END,
+                last_seen = excluded.last_seen
+            """,
+            (p.sku, p.name, brand, now, now),
+        )
+        count += 1
+
+    conn.commit()
+    return count
+
+
+def get_favorite_products(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
+    """Get previously purchased products, ordered by recency.
+
+    Returns products from purchase_history joined with current price data.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            ph.sku,
+            ph.product_name,
+            ph.brand,
+            ph.first_seen,
+            ph.last_seen,
+            p.price_cents,
+            p.sale_price_cents
+        FROM purchase_history ph
+        LEFT JOIN products p ON ph.sku = p.sku
+        ORDER BY ph.last_seen DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+    results = []
+    for r in rows:
+        price_cents = r["sale_price_cents"] or r["price_cents"]
+        results.append({
+            "sku": r["sku"],
+            "name": r["product_name"],
+            "brand": r["brand"] or "",
+            "first_seen": r["first_seen"],
+            "last_seen": r["last_seen"],
+            "price_cents": price_cents,
+            "price": f"${price_cents / 100:.2f}" if price_cents else None,
+        })
+    return results
+
+
+def get_favorite_brands(conn: sqlite3.Connection, limit: int = 10) -> list[dict]:
+    """Get most common brands from purchase history.
+
+    Returns brands ordered by number of distinct products.
+    """
+    rows = conn.execute(
+        """
+        SELECT
+            ph.brand,
+            COUNT(*) as product_count,
+            MAX(ph.last_seen) as last_seen
+        FROM purchase_history ph
+        WHERE ph.brand != '' AND ph.brand IS NOT NULL
+        GROUP BY ph.brand
+        ORDER BY product_count DESC, last_seen DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+    return [
+        {
+            "brand": r["brand"],
+            "products": r["product_count"],
+            "last_seen": r["last_seen"],
+        }
+        for r in rows
+    ]
+
+
+def get_purchase_stats(conn: sqlite3.Connection) -> dict:
+    """Get overall purchase history statistics."""
+    total_products = conn.execute(
+        "SELECT COUNT(*) as c FROM purchase_history"
+    ).fetchone()["c"]
+
+    date_range = conn.execute(
+        "SELECT MIN(first_seen) as first, MAX(last_seen) as last FROM purchase_history"
+    ).fetchone()
+
+    brand_count = conn.execute(
+        "SELECT COUNT(DISTINCT brand) as c FROM purchase_history WHERE brand != ''"
+    ).fetchone()["c"]
+
+    return {
+        "products_tracked": total_products,
+        "brands_tracked": brand_count,
+        "tracking_since": date_range["first"] if date_range else None,
+        "last_sync": date_range["last"] if date_range else None,
+    }

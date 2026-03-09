@@ -571,40 +571,158 @@ class CartItem:
 
 
 def add_to_cart(client: CurlClient, items: list[CartItem]) -> bool:
-    """Add items to cart."""
-    cart_items = []
+    """Add items to cart, incrementing quantity if item already exists.
+
+    The API's add endpoint is idempotent (won't increment existing items),
+    so we check the cart first and use update for existing items.
+
+    Handles duplicate SKUs in the same batch by accumulating quantities.
+    """
+    if not items:
+        return True
+
+    # Dedupe items: accumulate quantities for repeated SKUs in the same batch
+    sku_to_item: dict[str, CartItem] = {}
+    for item in items:
+        if item.sku in sku_to_item:
+            existing = sku_to_item[item.sku]
+            sku_to_item[item.sku] = CartItem(
+                sku=item.sku,
+                quantity=existing.quantity + item.quantity,
+                price_cents=item.price_cents,
+                sell_type=item.sell_type,
+                estimated_weight=item.estimated_weight,
+            )
+        else:
+            sku_to_item[item.sku] = item
+    items = list(sku_to_item.values())
+
+    # Fetch cart once to check for existing items
+    cart = get_cart(client)
+    existing_items: dict[str, tuple[str, int]] = {}  # sku -> (lineItemId, qty)
+    for line_item in cart.get("lineItems", []):
+        item_sku = line_item.get("variant", {}).get("sku", "")
+        if item_sku:
+            existing_items[item_sku] = (line_item.get("id"), line_item.get("quantity", 0))
+
+    # Separate into items to add vs update
+    items_to_add = []
+    updates = []
 
     for item in items:
-        fields = [
-            {"name": "unitSellType", "value": item.sell_type},
-            {
-                "name": "regularPrice",
-                "value": {
-                    "type": "centPrecision",
-                    "currencyCode": "USD",
-                    "centAmount": item.price_cents,
-                    "fractionDigits": 2,
+        if item.sku in existing_items:
+            line_item_id, current_qty = existing_items[item.sku]
+            new_qty = current_qty + item.quantity
+            updates.append({"lineItemId": line_item_id, "quantity": new_qty})
+        else:
+            fields = [
+                {"name": "unitSellType", "value": item.sell_type},
+                {
+                    "name": "regularPrice",
+                    "value": {
+                        "type": "centPrecision",
+                        "currencyCode": "USD",
+                        "centAmount": item.price_cents,
+                        "fractionDigits": 2,
+                    },
                 },
-            },
-        ]
+            ]
 
-        if item.estimated_weight is not None:
-            fields.append({"name": "estimatedTotalWeight", "value": item.estimated_weight})
+            if item.estimated_weight is not None:
+                fields.append({"name": "estimatedTotalWeight", "value": item.estimated_weight})
 
-        cart_items.append({
-            "quantity": item.quantity,
-            "sku": item.sku,
-            "fields": fields,
-        })
+            items_to_add.append({
+                "quantity": item.quantity,
+                "sku": item.sku,
+                "fields": fields,
+            })
 
-    status, _ = client.post(f"{BASE_URL}/api/cart/item/add", json_body=cart_items)
-    return status == 200
+    success = True
+
+    # Update existing items
+    if updates:
+        status, _ = client.post(f"{BASE_URL}/api/cart/item/update", json_body=updates)
+        if status != 200:
+            success = False
+
+    # Add new items
+    if items_to_add:
+        status, _ = client.post(f"{BASE_URL}/api/cart/item/add", json_body=items_to_add)
+        if status != 200:
+            success = False
+
+    return success
 
 
 def remove_from_cart(client: CurlClient, sku: str) -> bool:
-    """Remove item from cart."""
-    status, _ = client.post(f"{BASE_URL}/api/cart/item/remove", json_body={"sku": sku})
+    """Remove item from cart by SKU.
+
+    The API requires lineItemId (UUID), not SKU. We look up the cart
+    to find the matching line item ID first.
+    """
+    # Get cart to find line item ID for this SKU
+    cart = get_cart(client)
+    if not cart:
+        return False
+
+    line_item_id = None
+    for item in cart.get("lineItems", []):
+        item_sku = item.get("variant", {}).get("sku", "")
+        if item_sku == sku:
+            line_item_id = item.get("id")
+            break
+
+    if not line_item_id:
+        return False
+
+    status, _ = client.post(f"{BASE_URL}/api/cart/item/remove", json_body={"lineItemId": line_item_id})
     return status == 200
+
+
+def update_cart_quantity(client: CurlClient, sku: str, quantity: int) -> bool:
+    """Update quantity of an item already in cart.
+
+    The API requires lineItemId (UUID), not SKU. We look up the cart
+    to find the matching line item ID first.
+
+    Args:
+        client: Authenticated API client
+        sku: Product SKU to update
+        quantity: New absolute quantity (not delta)
+
+    Returns True on success.
+    """
+    cart = get_cart(client)
+    if not cart:
+        return False
+
+    line_item_id = None
+    for item in cart.get("lineItems", []):
+        item_sku = item.get("variant", {}).get("sku", "")
+        if item_sku == sku:
+            line_item_id = item.get("id")
+            break
+
+    if not line_item_id:
+        return False
+
+    status, _ = client.post(
+        f"{BASE_URL}/api/cart/item/update",
+        json_body=[{"lineItemId": line_item_id, "quantity": quantity}],
+    )
+    return status == 200
+
+
+def _find_cart_item(cart: dict, sku: str) -> tuple[str | None, int]:
+    """Find line item ID and current quantity for a SKU in cart.
+
+    Returns (line_item_id, current_quantity). If not found, returns (None, 0).
+    """
+    for item in cart.get("lineItems", []):
+        item_sku = item.get("variant", {}).get("sku", "")
+        if item_sku == sku:
+            return item.get("id"), item.get("quantity", 0)
+    return None, 0
 
 
 def get_cart(client: CurlClient) -> dict:

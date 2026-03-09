@@ -117,13 +117,19 @@ if ! configure_mcp "$CLAUDE_DESKTOP_CONFIG"; then
   warn "Claude Desktop MCP auto-configuration did not complete."
 fi
 
+# Claude Code settings
+CLAUDE_CODE_SETTINGS="$HOME/.claude/settings.json"
+if ! configure_mcp "$CLAUDE_CODE_SETTINGS"; then
+  warn "Claude Code MCP auto-configuration did not complete."
+fi
+
 info ""
 info "Installed successfully!"
 info ""
 info "Commands available:"
 info "  raley-bot   - CLI interface"
 info "  raley       - CLI interface (alias)"
-info "  raley-mcp   - MCP server for Claude Desktop"
+info "  raley-mcp   - MCP server for Claude Desktop/Code"
 info ""
 info "Get started:"
 info "  raley-bot login"

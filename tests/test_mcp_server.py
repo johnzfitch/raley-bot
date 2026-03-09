@@ -490,3 +490,262 @@ async def test_handle_knowledge_fetch_heading():
 
     assert result["heading"] == "Recipes"
     assert "Recipe content here" in result["content"]
+
+
+# ── handle_orders ─────────────────────────────────────────────────
+
+
+@patch("raley_assistant.mcp_server.get_orders")
+@patch("raley_assistant.mcp_server.get_api_client")
+async def test_handle_orders_parses_dollar_totals(mock_client, mock_orders):
+    """Verify totalPrice is treated as dollars, not cents.
+
+    Fixture based on actual API response where totalPrice=87.33 (dollars).
+    """
+    from raley_assistant.mcp_server import handle_orders
+
+    mock_client.return_value = MagicMock()
+    mock_orders.return_value = [
+        {
+            "orderId": 13568304,
+            "createdDate": "2026-02-12T21:26:51.433",
+            "orderStatus": {"id": "10", "value": "Complete"},
+            "productAmount": 63.92,
+            "totalPrice": 87.33,  # Already in dollars
+        },
+        {
+            "orderId": 13567941,
+            "createdDate": "2026-02-12T20:00:00.000",
+            "orderStatus": {"id": "10", "value": "Complete"},
+            "productAmount": 52.98,
+            "totalPrice": 61.91,
+        },
+    ]
+
+    result = json.loads(await handle_orders({"days": 90, "limit": 10}))
+
+    assert result["count"] == 2
+    # Totals should be in dollars, not divided by 100 again
+    assert result["orders"][0]["total"] == "$87.33"
+    assert result["orders"][1]["total"] == "$61.91"
+    assert result["orders"][0]["product_total"] == "$63.92"
+
+
+@patch("raley_assistant.mcp_server.get_orders")
+@patch("raley_assistant.mcp_server.get_api_client")
+async def test_handle_orders_handles_cent_amount_format(mock_client, mock_orders):
+    """Handle hypothetical centAmount format if API ever changes."""
+    from raley_assistant.mcp_server import handle_orders
+
+    mock_client.return_value = MagicMock()
+    mock_orders.return_value = [
+        {
+            "orderId": 123,
+            "createdDate": "2026-01-01T00:00:00.000",
+            "orderStatus": {"value": "Complete"},
+            "productAmount": 50.00,
+            "totalPrice": {"centAmount": 5000, "currencyCode": "USD"},
+        },
+    ]
+
+    result = json.loads(await handle_orders({"days": 90, "limit": 10}))
+
+    assert result["orders"][0]["total"] == "$50.00"
+
+
+# ── handle_price_check cache clear ───────────────────────────────
+
+
+def _mock_counting_conn(counts: dict[str, int]):
+    """Mock sqlite connection for cache clear tests."""
+    conn = MagicMock()
+    deleted_tables = []
+
+    def execute(sql, *args, **kwargs):
+        if sql.startswith("SELECT COUNT(*) FROM "):
+            table = sql.split()[-1]
+            cursor = MagicMock()
+            cursor.fetchone.return_value = (counts[table],)
+            return cursor
+        if sql.startswith("DELETE FROM "):
+            table = sql.split()[-1]
+            deleted_tables.append(table)
+            return MagicMock()
+        raise AssertionError(f"Unexpected SQL: {sql}")
+
+    conn.execute.side_effect = execute
+    conn.deleted_tables = deleted_tables
+    return conn
+
+
+@patch("raley_assistant.mcp_server.get_connection")
+async def test_handle_price_clear_default_tables(mock_conn):
+    from raley_assistant.mcp_server import handle_price_check
+
+    mock_db = _mock_counting_conn({
+        "products": 12,
+        "price_history": 34,
+    })
+    mock_conn.return_value = mock_db
+
+    result = json.loads(await handle_price_check({"clear": "true"}))
+
+    assert result["cleared"] == {
+        "products": 12,
+        "price_history": 34,
+    }
+    assert mock_db.deleted_tables == ["products", "price_history"]
+    mock_db.commit.assert_called_once()
+    mock_db.close.assert_called_once()
+
+
+@patch("raley_assistant.mcp_server.get_connection")
+async def test_handle_price_clear_all_tables(mock_conn):
+    from raley_assistant.mcp_server import handle_price_check
+
+    mock_db = _mock_counting_conn({
+        "products": 12,
+        "price_history": 34,
+        "purchase_history": 5,
+        "coupons": 8,
+        "order_items": 3,
+    })
+    mock_conn.return_value = mock_db
+
+    result = json.loads(await handle_price_check({"clear": "all"}))
+
+    assert result["cleared"] == {
+        "products": 12,
+        "price_history": 34,
+        "purchase_history": 5,
+        "coupons": 8,
+        "order_items": 3,
+    }
+    assert mock_db.deleted_tables == [
+        "products",
+        "price_history",
+        "purchase_history",
+        "coupons",
+        "order_items",
+    ]
+    mock_db.commit.assert_called_once()
+    mock_db.close.assert_called_once()
+
+
+# ── handle_favorites ──────────────────────────────────────────────
+
+
+@patch("raley_assistant.mcp_server.get_favorite_products")
+@patch("raley_assistant.mcp_server.get_connection")
+async def test_handle_favorites_products(mock_conn, mock_get_products):
+    from raley_assistant.mcp_server import handle_favorites
+
+    mock_db = MagicMock()
+    mock_conn.return_value = mock_db
+    mock_get_products.return_value = [
+        {"sku": "SKU1", "name": "Milk", "brand": "Clover", "price_cents": 499, "price": "$4.99"},
+        {"sku": "SKU2", "name": "Bread", "brand": "Dave's", "price_cents": 599, "price": "$5.99"},
+    ]
+
+    result = json.loads(await handle_favorites({"type": "products", "limit": 10}))
+
+    assert "products" in result
+    assert result["count"] == 2
+    assert result["products"][0]["sku"] == "SKU1"
+    mock_get_products.assert_called_once_with(mock_db, limit=10)
+
+
+@patch("raley_assistant.mcp_server.get_favorite_brands")
+@patch("raley_assistant.mcp_server.get_connection")
+async def test_handle_favorites_brands(mock_conn, mock_get_brands):
+    from raley_assistant.mcp_server import handle_favorites
+
+    mock_db = MagicMock()
+    mock_conn.return_value = mock_db
+    mock_get_brands.return_value = [
+        {"brand": "Clover", "products": 5, "last_seen": "2026-03-01"},
+    ]
+
+    result = json.loads(await handle_favorites({"type": "brands", "limit": 10}))
+
+    assert "brands" in result
+    assert result["count"] == 1
+    assert result["brands"][0]["brand"] == "Clover"
+
+
+@patch("raley_assistant.mcp_server.get_purchase_stats")
+@patch("raley_assistant.mcp_server.get_connection")
+async def test_handle_favorites_stats(mock_conn, mock_stats):
+    from raley_assistant.mcp_server import handle_favorites
+
+    mock_db = MagicMock()
+    mock_conn.return_value = mock_db
+    mock_stats.return_value = {
+        "products_tracked": 150,
+        "brands_tracked": 25,
+        "tracking_since": "2025-01-01",
+        "last_sync": "2026-03-08",
+    }
+
+    result = json.loads(await handle_favorites({"type": "stats"}))
+
+    assert result["products_tracked"] == 150
+    assert result["brands_tracked"] == 25
+
+
+@patch("raley_assistant.mcp_server.sync_products_from_search")
+@patch("raley_assistant.mcp_server.sync_previously_purchased")
+@patch("raley_assistant.mcp_server.get_previously_purchased")
+@patch("raley_assistant.mcp_server.get_api_client")
+@patch("raley_assistant.mcp_server.get_connection")
+async def test_handle_favorites_sync(mock_conn, mock_client, mock_get_prev, mock_sync_prev, mock_sync_prod):
+    from raley_assistant.mcp_server import handle_favorites
+
+    mock_db = MagicMock()
+    mock_conn.return_value = mock_db
+    mock_client.return_value = MagicMock()
+    # Simulate one page of results
+    mock_get_prev.return_value = [_fake_product("Milk", "SKU1"), _fake_product("Bread", "SKU2")]
+    mock_sync_prev.return_value = 2
+
+    result = json.loads(await handle_favorites({"type": "sync"}))
+
+    assert result["synced"] == 2
+    assert "Synced 2" in result["message"]
+    mock_sync_prev.assert_called_once()
+    mock_sync_prod.assert_called_once()
+
+
+@patch("raley_assistant.mcp_server.sync_products_from_search")
+@patch("raley_assistant.mcp_server.sync_previously_purchased")
+@patch("raley_assistant.mcp_server.get_previously_purchased")
+@patch("raley_assistant.mcp_server.get_api_client")
+@patch("raley_assistant.mcp_server.get_connection")
+async def test_handle_favorites_sync_stops_on_repeated_page(
+    mock_conn,
+    mock_client,
+    mock_get_prev,
+    mock_sync_prev,
+    mock_sync_prod,
+):
+    from raley_assistant.mcp_server import handle_favorites
+
+    mock_db = MagicMock()
+    mock_conn.return_value = mock_db
+    mock_client.return_value = MagicMock()
+    first_page = [
+        _fake_product(f"Item {i}", f"SKU{i}")
+        for i in range(30)
+    ]
+    mock_get_prev.side_effect = [first_page, first_page]
+    mock_sync_prev.return_value = len(first_page)
+
+    result = json.loads(await handle_favorites({"type": "sync"}))
+
+    assert result["synced"] == 30
+    assert mock_get_prev.call_args_list == [
+        ((mock_client.return_value,), {"offset": 0, "limit": 30}),
+        ((mock_client.return_value,), {"offset": 30, "limit": 30}),
+    ]
+    mock_sync_prev.assert_called_once_with(mock_db, first_page)
+    mock_sync_prod.assert_called_once_with(mock_db, first_page)
