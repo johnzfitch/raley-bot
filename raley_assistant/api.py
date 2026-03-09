@@ -602,8 +602,27 @@ def add_to_cart(client: CurlClient, items: list[CartItem]) -> bool:
 
 
 def remove_from_cart(client: CurlClient, sku: str) -> bool:
-    """Remove item from cart."""
-    status, _ = client.post(f"{BASE_URL}/api/cart/item/remove", json_body={"sku": sku})
+    """Remove item from cart by SKU.
+
+    The API requires lineItemId (UUID), not SKU. We look up the cart
+    to find the matching line item ID first.
+    """
+    # Get cart to find line item ID for this SKU
+    cart = get_cart(client)
+    if not cart:
+        return False
+
+    line_item_id = None
+    for item in cart.get("lineItems", []):
+        item_sku = item.get("variant", {}).get("sku", "")
+        if item_sku == sku:
+            line_item_id = item.get("id")
+            break
+
+    if not line_item_id:
+        return False
+
+    status, _ = client.post(f"{BASE_URL}/api/cart/item/remove", json_body={"lineItemId": line_item_id})
     return status == 200
 
 
