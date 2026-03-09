@@ -217,6 +217,35 @@ def test_get_last_purchase_date_not_found():
     assert last is None
 
 
+def test_get_last_purchase_date_from_purchase_history():
+    """Falls back to purchase_history when order_items is empty."""
+    conn = _mem_conn()
+    # Only sync to purchase_history (simulating favorites sync)
+    sync_previously_purchased(conn, [_prod("SKU1", "Milk")])
+    last = get_last_purchase_date(conn, "SKU1")
+    assert last is not None  # Should find it in purchase_history
+
+
+def test_get_last_purchase_date_returns_most_recent():
+    """Returns most recent date from either source."""
+    conn = _mem_conn()
+    # Old order in order_items
+    orders = [{
+        "createdDate": "2024-01-01T00:00:00Z",
+        "orderId": "o1",
+        "lineItems": [{"variant": {"sku": "SKU1"}, "name": "Milk"}],
+    }]
+    sync_order_items(conn, orders)
+    # Newer in purchase_history
+    conn.execute(
+        "INSERT INTO purchase_history (sku, product_name, brand, first_seen, last_seen) "
+        "VALUES ('SKU1', 'Milk', '', '2024-01-01', '2024-06-15')"
+    )
+    conn.commit()
+    last = get_last_purchase_date(conn, "SKU1")
+    assert last == "2024-06-15"  # Should return the more recent one
+
+
 def test_sync_order_items_skips_missing_sku():
     conn = _mem_conn()
     orders = [

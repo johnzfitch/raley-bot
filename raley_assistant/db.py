@@ -261,13 +261,32 @@ def sync_order_items(conn: sqlite3.Connection, orders: list[dict]) -> int:
 def get_last_purchase_date(conn: sqlite3.Connection, sku: str) -> str | None:
     """Get the most recent purchase date for a SKU.
 
-    Returns ISO date string or None if never purchased.
+    Checks both order_items (from order history) and purchase_history
+    (from favorites sync). Returns the most recent date found.
     """
-    row = conn.execute(
+    # Check order_items first
+    order_row = conn.execute(
         "SELECT purchased_at FROM order_items WHERE sku = ? ORDER BY purchased_at DESC LIMIT 1",
         (sku,),
     ).fetchone()
-    return row["purchased_at"] if row else None
+
+    # Check purchase_history (from favorites sync)
+    purchase_row = conn.execute(
+        "SELECT last_seen FROM purchase_history WHERE sku = ?",
+        (sku,),
+    ).fetchone()
+
+    dates = []
+    if order_row:
+        dates.append(order_row["purchased_at"])
+    if purchase_row:
+        dates.append(purchase_row["last_seen"])
+
+    if not dates:
+        return None
+
+    # Return most recent date
+    return max(dates)
 
 
 def get_product_with_history(
