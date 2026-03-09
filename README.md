@@ -10,17 +10,30 @@ You tell Raley what you need. Raley finds the best deal, calculates unit pricing
 
 The grocery store API uses F5 bot detection, so Raley shells out to `curl` for TLS fingerprint evasion instead of using Python HTTP libraries that get immediately flagged. Yes, we're using `subprocess.run(["curl", ...])` in 2026. Sometimes the unglamorous solution is the one that actually works.
 
-## Quick Start
+## Install
 
 ```bash
-git clone https://github.com/johnzfitch/raley-assistant.git
-cd raley-assistant
+curl -fsSL https://raw.githubusercontent.com/johnzfitch/raley-bot/main/install.sh | bash
+```
+
+This clones the repo, sets up a Python venv, installs dependencies, and symlinks `raley-bot` to `~/.local/bin`. Requires `git` and `curl` (installs `uv` automatically if missing).
+
+Then log in:
+
+```bash
+raley-bot login
+```
+
+### Manual Install
+
+```bash
+git clone https://github.com/johnzfitch/raley-bot.git
+cd raley-bot
 
 uv venv && source .venv/bin/activate
 uv pip install -e .
 
-# Login (opens browser, saves session automatically)
-raley login
+raley-bot login
 ```
 
 ## CLI

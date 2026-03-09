@@ -147,5 +147,7 @@ def save_preferences(prefs: Preferences, path: Optional[Path] = None) -> None:
         if entry:
             data[category] = entry
 
-    with open(target, "w") as f:
+    import os
+    fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)

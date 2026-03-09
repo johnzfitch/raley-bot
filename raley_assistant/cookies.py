@@ -27,17 +27,20 @@ def load_cookies_from_devtools(json_path: Path | str) -> list[dict[str, Any]]:
     """Load cookies from DevTools JSON export.
 
     Supports both array format [...] and object format {"cookies": [...]}.
+    Only keeps cookies whose domain ends with 'raleys.com'.
     """
     path = Path(json_path)
     with path.open() as f:
         data = json.load(f)
 
     if isinstance(data, list):
-        return data
+        cookies = data
     elif isinstance(data, dict) and "cookies" in data:
-        return data["cookies"]
+        cookies = data["cookies"]
     else:
         raise ValueError("Unrecognized cookie format. Expected array or {cookies: [...]}.")
+
+    return [c for c in cookies if c.get("domain", "").endswith("raleys.com")]
 
 
 def validate_cookies(cookies: list[dict[str, Any]]) -> tuple[bool, list[str]]:
@@ -64,6 +67,9 @@ def check_cookie_expiry(cookies: list[dict[str, Any]]) -> tuple[list[str], list[
 
     for cookie in cookies:
         name = cookie.get("name", "")
+        # Only flag required cookies — non-essential cookies expiring is harmless
+        if name not in REQUIRED_COOKIES:
+            continue
         expiry = cookie.get("expirationDate") or cookie.get("expires") or cookie.get("expiry")
 
         if not expiry:

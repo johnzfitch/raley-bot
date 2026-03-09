@@ -29,6 +29,9 @@ AUDIT.md
 PR.md
 docs/
 
+# Claude Code
+.claude/
+
 # Editor
 .vscode/
 .idea/

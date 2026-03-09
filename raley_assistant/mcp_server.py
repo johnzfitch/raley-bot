@@ -9,9 +9,88 @@ from pathlib import Path
 from typing import Any
 from datetime import datetime
 
-from mcp.server import Server
+from mcp.server import Server, NotificationOptions
+from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import (
+    Tool,
+    TextContent,
+    Prompt,
+    PromptArgument,
+    GetPromptResult,
+    PromptMessage,
+)
+
+from .t1d import score_t1d, annotate_product, find_coupon_matches
+from .memory import (
+    load_memory,
+    save_memory,
+    add_note,
+    set_field,
+    get_summary,
+    current_season,
+)
+from .knowledge import search_knowledge, list_books
+
+# ---------------------------------------------------------------------------
+# Channel 1: MCP Server Instructions
+# Injected verbatim into Claude's system prompt as "# MCP Server Instructions"
+# Re-evaluated each turn — keep it stateless and factual.
+# ---------------------------------------------------------------------------
+
+MCP_INSTRUCTIONS = """
+You are connected to Raley's Grocery Shopping Assistant — a live interface to
+the Raley's / Bel Air / Nob Hill grocery store API with price history tracking,
+coupon management, and Type 1 diabetes nutrition guidance.
+
+## Tools
+
+| Tool    | What it does |
+|---------|-------------|
+| search  | Find products. Returns best match with SKU, price, sale status, unit price |
+| add     | Add to cart. Requires `sku` and `cents` from a search result |
+| remove  | Remove item from cart by SKU |
+| cart    | View current cart. Use `summary_only=true` for a quick total |
+| offers  | Coupon management: `list` unclipped, `clip_all`, or `sync` to local DB |
+| plan    | Parse a freeform grocery list, find matches + totals. Does not add to cart |
+| price   | Price history for a SKU, or text search of local product DB |
+| orders  | Past order history. Syncs SKUs to local DB for frequency tracking |
+| deals     | Best-value items this week: clipped coupons + sale prices + price history |
+| memory    | Read or write user's shopping memory (T1D config, notes, preferences) |
+| knowledge | Search T1D reference books (GI tables, insulin math, recipes, meal ideas) |
+| auth      | Check if session cookies are valid |
+
+## Workflow
+
+**Planning a trip**: Use `offers sync` first to pull fresh coupons, then `plan`
+with the grocery list. Check `deals` for this week's best values. Confirm items
+with the user before calling `add`.
+
+**Finding best value**: `search` returns unit pricing ($/oz, $/lb). Always check
+if the recommended item is on sale or has a clipped coupon via `deals`. For
+price history context, call `price` with the SKU.
+
+**Coupon workflow**: `offers list` shows unclipped coupons. `offers clip_all`
+clips everything at once. After clipping, relevant discounts apply automatically
+at checkout — no promo code needed.
+
+**Memory**: Use `memory get` at the start of a session to load user's T1D config
+and preferences. Use `memory note` to record discoveries (liked recipes,
+items to avoid, brands that were good value). Use `memory set` to update
+structured fields like `gi_ceiling` or `carb_target_per_meal`.
+
+## T1D Nutrition
+
+When GI data is available in search or plan results:
+- `gi_cat: "low"` (GI < 55) — preferred, no flag needed
+- `gi_cat: "medium"` (GI 55-69) — note portions, don't block
+- `flag: "HIGH_GI"` or `flag: "WARN_GI"` — mention the flag and suggest the
+  `gi_swap` value if present
+
+Always report carb counts when discussing recipes or meals. Insulin timing
+(pre-bolusing, extended bolus) is important context — ask about the user's
+routine if meal planning.
+""".strip()
 
 from .api import (
     create_client,
@@ -76,7 +155,7 @@ def get_api_client():
     """Get authenticated API client."""
     if not COOKIES_PATH.exists():
         raise RuntimeError(
-            f"Cookies not found at {COOKIES_PATH}. Run 'raley login' first."
+            f"Cookies not found at {COOKIES_PATH}. Run 'raley-bot login' first."
         )
     return create_client(COOKIES_PATH)
 
@@ -86,7 +165,8 @@ def save_result_to_file(filename_prefix: str, data: dict) -> str:
     base_dir = Path.home() / ".local" / "share" / "raley-assistant"
     base_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    from datetime import timezone
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     filepath = base_dir / f"{filename_prefix}-{timestamp}.json"
 
     # Write with owner-only permissions
@@ -102,6 +182,31 @@ def save_result_to_file(filename_prefix: str, data: dict) -> str:
 # ============================================================================
 
 TOOLS = [
+    Tool(
+        name="deals",
+        description="Best-value items this week: clipped coupons + sale prices + price history. Run after 'offers sync'.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer"},
+                "gi_filter": {"type": "boolean", "description": "Only show low-GI items (GI < 55)"},
+            },
+        },
+    ),
+    Tool(
+        name="memory",
+        description="Read or write shopping memory: T1D config, notes, preferences. Persists across sessions.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["get", "set", "note"]},
+                "section": {"type": "string", "enum": ["t1d", "shopping"], "description": "For action=set"},
+                "key": {"type": "string", "description": "Field name for action=set, note key for action=note"},
+                "value": {"type": "string", "description": "Value for action=set or action=note"},
+            },
+            "required": ["action"],
+        },
+    ),
     Tool(
         name="search",
         description="Search products. Returns best match with SKU, price, unit pricing.",
@@ -208,6 +313,19 @@ TOOLS = [
             "properties": {},
         },
     ),
+    Tool(
+        name="knowledge",
+        description="Search installed T1D reference books: GI tables, insulin math, carb counting, recipes, meal planning. Use when the user asks about nutrition science, insulin timing, or needs recipe ideas.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "q": {"type": "string", "description": "Search terms (space separated)"},
+                "book": {"type": "string", "description": "Specific book filename stem to search (optional, omit to search all)"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["q"],
+        },
+    ),
 ]
 
 
@@ -303,6 +421,17 @@ async def handle_search(args: dict) -> str:
         if "PRICE_WARNING" in decision.flags:
             result["high_price"] = True
 
+    # T1D annotation
+    mem = load_memory()
+    t1d = score_t1d(decision.product_name, mem.t1d.gi_ceiling)
+    if t1d.gi is not None:
+        result["gi"] = t1d.gi
+        result["gi_cat"] = t1d.category
+    if t1d.flag:
+        result["gi_flag"] = t1d.flag
+    if t1d.swap_suggestion:
+        result["gi_swap"] = t1d.swap_suggestion
+
     return json.dumps(result)
 
 
@@ -343,7 +472,7 @@ async def handle_cart(args: dict) -> str:
     """View cart."""
     client = get_api_client()
     cart = get_cart(client)
-    limit = args.get("limit", 10)
+    limit = min(args.get("limit", 10), 50)
     summary_only = args.get("summary_only", False)
     save_to_file_flag = args.get("save_to_file", False)
 
@@ -417,7 +546,7 @@ async def handle_offers(args: dict) -> str:
         return json.dumps(result)
 
     # Default: list
-    limit = args.get("limit", 10)
+    limit = min(args.get("limit", 10), 100)
     offers = get_offers(client, category=args.get("cat"), clipped="Unclipped", rows=100)
 
     results = [
@@ -455,6 +584,9 @@ async def handle_build_list(args: dict) -> str:
     budget = args.get("budget")
     summary_only = args.get("summary_only", False)
     save_to_file = args.get("save_to_file", False)
+
+    mem = load_memory()
+    gi_ceiling = mem.t1d.gi_ceiling
 
     results = []
     total = 0.0
@@ -515,6 +647,16 @@ async def handle_build_list(args: dict) -> str:
         if freq in (PurchaseFrequency.MONTHLY, PurchaseFrequency.QUARTERLY):
             r["confirm"] = freq.name.lower()
             confirm_needed.append(item_name)
+
+        # T1D annotation
+        t1d = score_t1d(decision.product_name, gi_ceiling)
+        if t1d.gi is not None:
+            r["gi"] = t1d.gi
+            r["gi_cat"] = t1d.category
+        if t1d.flag:
+            r["gi_flag"] = t1d.flag
+        if t1d.swap_suggestion:
+            r["gi_swap"] = t1d.swap_suggestion
 
         results.append(r)
 
@@ -621,7 +763,7 @@ async def handle_price_check(args: dict) -> str:
 async def handle_orders(args: dict) -> str:
     """Get order history."""
     client = get_api_client()
-    days_back = args.get("days", 90)
+    days_back = min(args.get("days", 90), 365)
     limit = min(args.get("limit", 10), 30)
     summary_only = args.get("summary_only", False)
     save_to_file_flag = args.get("save_to_file", False)
@@ -689,6 +831,156 @@ async def handle_auth(args: dict) -> str:
     return json.dumps(status)
 
 
+async def handle_deals(args: dict) -> str:
+    """Return best-value items: on-sale products with clipped coupons + price history."""
+    client = get_api_client()
+    limit = min(args.get("limit", 15), 50)
+    gi_filter = args.get("gi_filter", False)
+
+    # Load clipped coupons from local DB first (sync separately via offers sync)
+    conn = get_connection()
+    clipped_rows = conn.execute(
+        "SELECT offer_id, headline, discount_amount FROM coupons WHERE is_clipped = 1 LIMIT 200"
+    ).fetchall()
+    conn.close()
+
+    # Fetch currently on-sale products (up to 30)
+    try:
+        sale_products = search_products(client, "", on_sale=True, limit=30)
+    except Exception:
+        sale_products = []
+
+    # Also fetch previously purchased items that are on sale
+    try:
+        prev_products = search_products(client, "", previously_purchased=True, on_sale=True, limit=20)
+        seen_skus = {p.sku for p in sale_products}
+        sale_products += [p for p in prev_products if p.sku not in seen_skus]
+    except Exception:
+        pass
+
+    # Load clipped coupon offers from API to get product_skus
+    coupon_matches: dict[str, list] = {}
+    try:
+        clipped_offers = get_offers(client, clipped="Clipped", rows=100)
+        products_as_dicts = [{"sku": p.sku, "name": p.name} for p in sale_products]
+        coupon_matches = find_coupon_matches(clipped_offers, products_as_dicts)
+    except Exception:
+        pass
+
+    # Build deal results with T1D and price history context
+    mem = load_memory()
+    gi_ceiling = mem.t1d.gi_ceiling
+    results = []
+    conn = get_connection()
+
+    for p in sale_products:
+        if not p.sale_price_cents:
+            continue
+
+        discount_cents = p.price_cents - p.sale_price_cents
+        discount_pct = (discount_cents / p.price_cents * 100) if p.price_cents else 0
+
+        entry: dict[str, Any] = {
+            "sku": p.sku,
+            "name": _truncate(p.name, 50),
+            "sale": f"${p.sale_price_cents / 100:.2f}",
+            "was": f"${p.price_cents / 100:.2f}",
+            "save": f"${discount_cents / 100:.2f} ({discount_pct:.0f}%)",
+        }
+
+        # Unit pricing
+        if p.price_per_oz:
+            entry["per_oz"] = f"${p.price_per_oz:.3f}"
+
+        # Price history context
+        try:
+            is_deal, reason = is_good_deal(conn, p.sku, p.sale_price_cents)
+            if is_deal:
+                entry["history"] = reason
+        except Exception:
+            pass
+
+        # Clipped coupon match
+        if p.sku in coupon_matches:
+            entry["coupons"] = coupon_matches[p.sku]
+
+        # T1D annotation
+        t1d = score_t1d(p.name, gi_ceiling)
+        if t1d.gi is not None:
+            entry["gi"] = t1d.gi
+            entry["gi_cat"] = t1d.category
+        if t1d.flag:
+            entry["gi_flag"] = t1d.flag
+        if t1d.swap_suggestion and t1d.flag == "HIGH_GI":
+            entry["gi_swap"] = t1d.swap_suggestion
+
+        if gi_filter and t1d.category not in ("low", "unknown"):
+            continue
+
+        results.append(entry)
+
+    conn.close()
+
+    # Sort: coupon+sale first, then by discount %
+    results.sort(
+        key=lambda x: (1 if "coupons" in x else 0, float(x.get("save", "0").split(" ")[0][1:])),
+        reverse=True,
+    )
+
+    clipped_count = len(clipped_rows)
+    return json.dumps({
+        "deals": results[:limit],
+        "total_found": len(results),
+        "clipped_coupons_on_file": clipped_count,
+        "tip": "Run 'offers sync' then 'offers clip_all' to refresh coupons before shopping.",
+    })
+
+
+async def handle_knowledge(args: dict) -> str:
+    """Search installed T1D reference books."""
+    query = args.get("q", "").strip()
+    if not query:
+        books = list_books()
+        return json.dumps({"books": books, "tip": "Pass q= to search"})
+
+    results = search_knowledge(
+        query,
+        book=args.get("book"),
+        limit=min(args.get("limit", 5), 10),
+    )
+    if not results:
+        return json.dumps({"results": [], "tip": "Try broader keywords or check installed books with knowledge{}"})
+    return json.dumps({"results": results, "count": len(results)})
+
+
+async def handle_memory(args: dict) -> str:
+    """Read or write shopping memory."""
+    action = args.get("action", "get")
+
+    if action == "get":
+        mem = load_memory()
+        return json.dumps(get_summary(mem))
+
+    if action == "set":
+        section = args.get("section", "")
+        key = args.get("key", "")
+        value = args.get("value", "")
+        if not section or not key:
+            return json.dumps({"error": "section and key required for action=set"})
+        ok, msg = set_field(section, key, value)
+        return json.dumps({"ok": ok, "message": msg})
+
+    if action == "note":
+        key = args.get("key", "")
+        value = args.get("value", "")
+        if not key or not value:
+            return json.dumps({"error": "key and value required for action=note"})
+        add_note(key, value)
+        return json.dumps({"ok": True, "note_key": key})
+
+    return json.dumps({"error": f"Unknown action: {action}. Use get, set, or note."})
+
+
 TOOL_HANDLERS = {
     "search": handle_search,
     "add": handle_add,
@@ -699,6 +991,9 @@ TOOL_HANDLERS = {
     "price": handle_price_check,
     "orders": handle_orders,
     "auth": handle_auth,
+    "deals": handle_deals,
+    "memory": handle_memory,
+    "knowledge": handle_knowledge,
 }
 
 
@@ -731,10 +1026,146 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps({"error": msg}))]
 
 
+# ---------------------------------------------------------------------------
+# Channel 4: MCP Prompts — slash commands /mcp__raley-assistant__<name>
+# ---------------------------------------------------------------------------
+
+_PROMPTS = [
+    Prompt(
+        name="weekly_deals",
+        description="Surface this week's best Raley's deals: clipped coupons + sale items + price history context",
+        arguments=[
+            PromptArgument(name="gi_only", description="'yes' to filter to low-GI items only", required=False),
+        ],
+    ),
+    Prompt(
+        name="t1d_meal_plan",
+        description="Build a T1D-optimized weekly meal plan and shopping list based on current deals and user memory",
+        arguments=[
+            PromptArgument(name="budget", description="Weekly budget in dollars (e.g. '120')", required=False),
+            PromptArgument(name="servings", description="Number of servings per meal (default 2)", required=False),
+        ],
+    ),
+    Prompt(
+        name="seasonal_now",
+        description="What California produce is in season right now at Raley's, with GI ratings and meal ideas",
+        arguments=[],
+    ),
+    Prompt(
+        name="coupon_matchup",
+        description="Cross-reference clipped coupons against order history — find stack deals and expiring offers",
+        arguments=[],
+    ),
+]
+
+
+@server.list_prompts()
+async def list_prompts() -> list[Prompt]:
+    return _PROMPTS
+
+
+@server.get_prompt()
+async def get_prompt(name: str, arguments: dict[str, str] | None) -> GetPromptResult:
+    args = arguments or {}
+    mem = load_memory()
+    season = current_season()
+
+    if name == "weekly_deals":
+        gi_only = args.get("gi_only", "no").lower() in ("yes", "true", "1")
+        gi_note = " Only include items with GI < 55." if gi_only else ""
+        text = (
+            f"Please help me find the best deals at Raley's this week.\n\n"
+            f"1. First run `offers sync` to refresh coupons, then `offers clip_all` to clip everything.\n"
+            f"2. Run `deals` (with gi_filter={str(gi_only).lower()}) to see this week's top values.\n"
+            f"3. Cross-reference with my order history (`orders summary_only=true`) to prioritize items I buy regularly.\n"
+            f"4. For the top 5-8 deals, check price history with `price` to confirm they're genuinely good prices.\n\n"
+            f"Present results as a ranked list: item, sale price, savings %, GI category, clipped coupon status.{gi_note}\n\n"
+            f"My T1D GI ceiling is {mem.t1d.gi_ceiling}. Flag anything above that."
+        )
+
+    elif name == "t1d_meal_plan":
+        budget = args.get("budget", "")
+        servings = args.get("servings", "2")
+        budget_note = f" Target budget: ${budget}/week." if budget else ""
+        t1d_note = (
+            f"Carb target: {mem.t1d.carb_target_per_meal}g/meal. "
+            f"GI ceiling: {mem.t1d.gi_ceiling}. "
+            f"Avoid: {', '.join(mem.t1d.avoid_items) or 'none noted'}. "
+            f"Favorite proteins: {', '.join(mem.t1d.favorite_proteins) or 'open'}."
+        )
+        text = (
+            f"Please build a T1D-friendly weekly meal plan and Raley's shopping list "
+            f"for {servings} servings per meal.{budget_note}\n\n"
+            f"**My T1D config**: {t1d_note}\n\n"
+            f"**Approach**:\n"
+            f"1. Check `memory get` for my full profile and any notes on liked/disliked items.\n"
+            f"2. Check `deals` to build meals around what's on sale this week.\n"
+            f"3. For each meal: approx carb count, GI level, protein source, and whether it's seasonal ({season}).\n"
+            f"4. Generate a shopping list grouped by store section (produce, proteins, dairy, pantry, frozen).\n"
+            f"5. Use `plan` with the full list to get SKUs and prices.\n\n"
+            f"Format: 7 dinners + 5 lunches + 7 breakfasts. Include 3-5 low-GI snack options.\n"
+            f"Each recipe: name, carbs/serving, GI category, key ingredients, estimated cost."
+        )
+
+    elif name == "seasonal_now":
+        season_produce = {
+            "winter": "citrus (oranges, grapefruit, clementines), kale, Brussels sprouts, root vegetables, pomegranate, persimmon",
+            "spring": "asparagus, artichokes, English peas, strawberries, cherries, spring onions, fava beans",
+            "summer": "heirloom tomatoes, stone fruit (peaches, nectarines, plums), corn, zucchini, peppers, basil, berries, figs",
+            "fall": "winter squash, apples, pears, grapes, Brussels sprouts, cauliflower, pomegranate, sweet potato",
+        }
+        text = (
+            f"It's {season} in California. Here's what to look for at Raley's right now:\n\n"
+            f"**In season**: {season_produce[season]}\n\n"
+            f"Please:\n"
+            f"1. Search for 4-5 of these items to confirm availability and current prices.\n"
+            f"2. For each: GI rating, peak-season note, and a quick T1D-friendly meal idea.\n"
+            f"3. Note which have the best unit pricing (freshest + cheapest per lb).\n"
+            f"4. Suggest 2-3 complete meals built around what's in season + currently on sale.\n\n"
+            f"My GI ceiling is {mem.t1d.gi_ceiling}. Flag anything above it and suggest a swap."
+        )
+
+    elif name == "coupon_matchup":
+        text = (
+            f"Please cross-reference my clipped coupons against my shopping history.\n\n"
+            f"1. Run `offers sync` to refresh the coupon DB.\n"
+            f"2. Run `offers list` to see available coupons — clip anything relevant.\n"
+            f"3. Run `deals` to see sale items where I have a coupon (stacking discount).\n"
+            f"4. Check `orders` to find what I buy regularly — look for coupon overlap.\n\n"
+            f"Present: stack deals (sale + clipped coupon), items worth stocking up on, "
+            f"and anything expiring soon I should use. "
+            f"Include GI ratings for all items (ceiling: {mem.t1d.gi_ceiling})."
+        )
+
+    else:
+        text = f"Unknown prompt: {name}"
+
+    return GetPromptResult(
+        description=next((p.description for p in _PROMPTS if p.name == name), ""),
+        messages=[
+            PromptMessage(
+                role="user",
+                content=TextContent(type="text", text=text),
+            )
+        ],
+    )
+
+
 async def run_server():
     async with stdio_server() as (read_stream, write_stream):
-        init_options = server.create_initialization_options()
-        await server.run(read_stream, write_stream, init_options)
+        await server.run(
+            read_stream,
+            write_stream,
+            InitializationOptions(
+                server_name="raley-assistant",
+                server_version="0.3.0",
+                capabilities=server.get_capabilities(
+                    notification_options=NotificationOptions(),
+                    experimental_capabilities={},
+                ),
+                instructions=MCP_INSTRUCTIONS,
+            ),
+        )
 
 
 def main():
