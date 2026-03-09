@@ -165,7 +165,8 @@ def save_result_to_file(filename_prefix: str, data: dict) -> str:
     base_dir = Path.home() / ".local" / "share" / "raley-assistant"
     base_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    from datetime import timezone
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     filepath = base_dir / f"{filename_prefix}-{timestamp}.json"
 
     # Write with owner-only permissions

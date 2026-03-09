@@ -61,8 +61,8 @@ def search_knowledge(
         return []
 
     if book:
-        target = KNOWLEDGE_DIR / f"{book}.md"
-        files = [target] if target.exists() else []
+        target = (KNOWLEDGE_DIR / f"{book}.md").resolve()
+        files = [target] if target.exists() and str(target).startswith(str(KNOWLEDGE_DIR.resolve())) else []
     else:
         files = sorted(KNOWLEDGE_DIR.glob("*.md"))
 
