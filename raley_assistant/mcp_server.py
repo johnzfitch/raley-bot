@@ -46,19 +46,21 @@ coupon management, and Type 1 diabetes nutrition guidance.
 
 ## Tools
 
-| Tool    | What it does |
-|---------|-------------|
-| search  | Find products. Returns best match with SKU, price, sale status, unit price |
-| add     | Add to cart. Requires `sku` and `cents` from a search result |
-| remove  | Remove item from cart by SKU |
-| cart    | View current cart. Use `summary_only=true` for a quick total |
-| offers  | Coupon management: `list` unclipped, `clip_all`, or `sync` to local DB |
-| plan    | Parse a freeform grocery list, find matches + totals. Does not add to cart |
-| price   | Price history for a SKU, or text search of local product DB |
-| orders  | Past order history. Syncs SKUs to local DB for frequency tracking |
+| Tool      | What it does |
+|-----------|-------------|
+| search    | Find products. Returns best match with SKU, price, sale status, unit price |
+| add       | Add single item to cart. Requires `sku` and `cents` from a search result |
+| add_plan  | Bulk add items: pass 'sku:cents,sku:cents:qty,...' from plan results |
+| remove    | Remove item from cart by SKU |
+| cart      | View current cart. Use `summary_only=true` for a quick total |
+| offers    | Coupon management: `list` unclipped, `clip_all`, or `sync` to local DB |
+| plan      | Parse a freeform grocery list, find matches + totals. Does not add to cart |
+| price     | Price history for a SKU, or text search of local product DB |
+| orders    | Past order history. Syncs SKUs to local DB for frequency tracking |
 | deals     | Best-value items this week: clipped coupons + sale prices + price history |
-| memory    | Read or write user's shopping memory (T1D config, notes, preferences) |
-| knowledge | Search T1D reference books (GI tables, insulin math, recipes, meal ideas) |
+| memory    | Read/write shopping memory. Use `section=t1d/shopping/notes` to filter |
+| knowledge | Search T1D books. Use `book`+`heading` to fetch full section after searching |
+| read_saved| Read a previously saved file (from `save_to_file=true`) |
 | auth      | Check if session cookies are valid |
 
 ## Workflow
@@ -204,9 +206,10 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["get", "set", "note"]},
-                "section": {"type": "string", "enum": ["t1d", "shopping"], "description": "For action=set"},
+                "section": {"type": "string", "enum": ["t1d", "shopping", "notes"], "description": "For get: filter to section. For set: target section."},
                 "key": {"type": "string", "description": "Field name for action=set, note key for action=note"},
                 "value": {"type": "string", "description": "Value for action=set or action=note"},
+                "limit": {"type": "integer", "description": "For action=get with section=notes: max notes to return"},
             },
             "required": ["action"],
         },
@@ -323,11 +326,32 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "q": {"type": "string", "description": "Search terms (space separated)"},
+                "q": {"type": "string", "description": "Search terms (space separated). Empty string lists books."},
                 "book": {"type": "string", "description": "Specific book filename stem to search (optional, omit to search all)"},
+                "heading": {"type": "string", "description": "Fetch full content of this heading (use after searching to get complete text)"},
                 "limit": {"type": "integer"},
             },
-            "required": ["q"],
+        },
+    ),
+    Tool(
+        name="read_saved",
+        description="Read a previously saved result file (from save_to_file=true). Returns the JSON contents.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "filename": {"type": "string", "description": "Filename (e.g. 'cart-20260308-143022.json') or just the prefix ('cart')"},
+            },
+        },
+    ),
+    Tool(
+        name="add_plan",
+        description="Bulk add items from a plan result to cart. Pass the plan JSON or a comma-separated 'sku:cents:qty' list.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "items": {"type": "string", "description": "Comma-separated 'sku:cents' or 'sku:cents:qty' (e.g. '10101877:499,10102003:299:2')"},
+            },
+            "required": ["items"],
         },
     ),
 ]
@@ -950,14 +974,33 @@ async def handle_deals(args: dict) -> str:
 
 async def handle_knowledge(args: dict) -> str:
     """Search installed T1D reference books."""
+    from .knowledge import KNOWLEDGE_DIR, _chunk_file
+
     query = args.get("q", "").strip()
+    book = args.get("book")
+    heading = args.get("heading")
+
+    # Fetch mode: get full content of a specific heading
+    if heading and book:
+        target = (KNOWLEDGE_DIR / f"{book}.md").resolve()
+        if not target.exists() or not str(target).startswith(str(KNOWLEDGE_DIR.resolve())):
+            return json.dumps({"error": f"Book not found: {book}"})
+        try:
+            chunks = _chunk_file(target)
+            for h, content in chunks:
+                if h.lower() == heading.lower():
+                    return json.dumps({"book": book, "heading": h, "content": content})
+            return json.dumps({"error": f"Heading not found: {heading}", "available": [h for h, _ in chunks[:20]]})
+        except OSError as e:
+            return json.dumps({"error": str(e)})
+
     if not query:
         books = list_books()
-        return json.dumps({"books": books, "tip": "Pass q= to search"})
+        return json.dumps({"books": books, "tip": "Pass q= to search, or book+heading to fetch full section"})
 
     results = search_knowledge(
         query,
-        book=args.get("book"),
+        book=book,
         limit=min(args.get("limit", 5), 10),
     )
     if not results:
@@ -971,6 +1014,36 @@ async def handle_memory(args: dict) -> str:
 
     if action == "get":
         mem = load_memory()
+        section = args.get("section")
+        limit = args.get("limit", 20)
+
+        # Section-filtered responses for token efficiency
+        if section == "t1d":
+            t = mem.t1d
+            return json.dumps({
+                "carb_target_per_meal_g": t.carb_target_per_meal,
+                "gi_ceiling": t.gi_ceiling,
+                "bg_target": t.target_bg,
+                "avoid_high_gi": t.avoid_high_gi,
+                "icr": t.insulin_to_carb_ratio or None,
+                "avoid_items": t.avoid_items or None,
+                "safe_snacks": t.safe_snacks or None,
+                "favorite_recipes": t.favorite_recipes or None,
+            })
+        if section == "shopping":
+            s = mem.shopping
+            return json.dumps({
+                "weekly_budget": f"${s.weekly_budget:.2f}" if s.weekly_budget else None,
+                "prefer_store_brand": s.prefer_store_brand,
+                "staples": s.staples or None,
+                "avoid_brands": s.avoid_brands or None,
+            })
+        if section == "notes":
+            # Paginated notes - most recent first (by key alpha, or could track timestamps)
+            notes = dict(sorted(mem.notes.items(), reverse=True)[:limit])
+            return json.dumps({"notes": notes, "total": len(mem.notes)})
+
+        # Full summary (default)
         return json.dumps(get_summary(mem))
 
     if action == "set":
@@ -993,6 +1066,88 @@ async def handle_memory(args: dict) -> str:
     return json.dumps({"error": f"Unknown action: {action}. Use get, set, or note."})
 
 
+async def handle_read_saved(args: dict) -> str:
+    """Read a previously saved result file."""
+    filename = args.get("filename", "").strip()
+    base_dir = Path.home() / ".local" / "share" / "raley-assistant"
+
+    if not filename:
+        # List available files
+        if not base_dir.exists():
+            return json.dumps({"files": [], "tip": "No saved files yet"})
+        files = sorted(base_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)[:20]
+        return json.dumps({
+            "files": [f.name for f in files],
+            "tip": "Pass filename= to read a specific file",
+        })
+
+    # Sanitize filename
+    safe_name = re.sub(r"[^\w.-]", "", filename)
+    if not safe_name.endswith(".json"):
+        # Find most recent file matching prefix
+        candidates = sorted(base_dir.glob(f"{safe_name}*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+        if not candidates:
+            return json.dumps({"error": f"No files matching prefix: {safe_name}"})
+        target = candidates[0]
+    else:
+        target = base_dir / safe_name
+
+    target = target.resolve()
+    if not str(target).startswith(str(base_dir.resolve())):
+        return json.dumps({"error": "Invalid path"})
+    if not target.exists():
+        return json.dumps({"error": f"File not found: {target.name}"})
+
+    try:
+        with open(target) as f:
+            data = json.load(f)
+        return json.dumps({"filename": target.name, "data": data})
+    except (json.JSONDecodeError, OSError) as e:
+        return json.dumps({"error": f"Failed to read: {e}"})
+
+
+async def handle_add_plan(args: dict) -> str:
+    """Bulk add items to cart from plan output."""
+    client = get_api_client()
+    items_str = args.get("items", "")
+
+    if not items_str:
+        return json.dumps({"error": "items required: comma-separated 'sku:cents' or 'sku:cents:qty'"})
+
+    # Parse sku:cents:qty format
+    cart_items = []
+    errors = []
+    for part in items_str.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        pieces = part.split(":")
+        if len(pieces) < 2:
+            errors.append(f"Invalid format: {part}")
+            continue
+        try:
+            sku = pieces[0].strip()
+            cents = int(pieces[1].strip())
+            qty = int(pieces[2].strip()) if len(pieces) > 2 else 1
+            cart_items.append(CartItem(sku=sku, quantity=qty, price_cents=cents))
+        except ValueError:
+            errors.append(f"Invalid numbers: {part}")
+
+    if not cart_items:
+        return json.dumps({"error": "No valid items to add", "parse_errors": errors})
+
+    success = api_add_to_cart(client, cart_items)
+    result: dict[str, Any] = {
+        "ok": success,
+        "added": len(cart_items),
+        "skus": [c.sku for c in cart_items],
+    }
+    if errors:
+        result["parse_errors"] = errors
+
+    return json.dumps(result)
+
+
 TOOL_HANDLERS = {
     "search": handle_search,
     "add": handle_add,
@@ -1006,6 +1161,8 @@ TOOL_HANDLERS = {
     "deals": handle_deals,
     "memory": handle_memory,
     "knowledge": handle_knowledge,
+    "read_saved": handle_read_saved,
+    "add_plan": handle_add_plan,
 }
 
 
